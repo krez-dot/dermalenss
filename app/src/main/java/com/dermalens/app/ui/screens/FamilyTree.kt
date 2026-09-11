@@ -94,7 +94,7 @@ val familyTrees: Map<String, FamilyTree> = mapOf(
         groupingNote = "All warts are caused by HPV (human papillomavirus), but they look different depending on where they grow and which HPV strain is involved.",
         relatives = listOf(
             FamilyTreeRelative("Common Wart (Verruca Vulgaris)", "The typical wart, usually on hands or fingers.", "Rough, raised, flesh-colored bump, sometimes with visible black dots (clotted blood vessels).", LesionIconType.ROUGH_BUMP),
-            FamilyTreeRelative("Plantar Wart", "Grows on the sole of the foot, pushed inward by body weight.", "Flat rather than raised (pressure flattens it), can be tender when walking.", LesionIconType.FLAT_PATCH),
+            FamilyTreeRelative("Plantar Wart", "Grows on the sole of the foot, pushed inward by body weight.", "Flat rather than raised (pressure flattens it), can be tender when walking.", LesionIconType.ROUGH_BUMP),
             FamilyTreeRelative("Flat Wart (Verruca Plana)", "Smaller and smoother than common warts, often appears in clusters.", "Small, smooth-topped, slightly raised bumps, often many at once on the face or legs.", LesionIconType.PALE_BUMP),
             FamilyTreeRelative("Filiform Wart", "A thin, finger-like projection, usually on the face.", "Long, narrow, thread-like growth, often around the mouth, eyes, or nose.", LesionIconType.ROUGH_BUMP)
         )

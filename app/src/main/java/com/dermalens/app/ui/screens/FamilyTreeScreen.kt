@@ -63,15 +63,26 @@ private fun LesionSchematicIcon(type: LesionIconType, modifier: Modifier = Modif
                 drawCircle(color = Color(0xFF7B241C), radius = r * 0.58f, center = center, style = Stroke(width = 1.5f))
             }
             LesionIconType.SCALE_PATCH -> {
-                // An irregular blob (an offset-and-scaled circle union) reads as "patch," not
-                // "bump" -- a few short flake marks on top suggest scaling/crust texture.
-                drawCircle(color = Color(0xFFD7BFA6), radius = r * 0.62f, center = center.copy(x = center.x - r * 0.1f))
-                drawCircle(color = Color(0xFFD7BFA6), radius = r * 0.5f, center = center.copy(x = center.x + r * 0.22f, y = center.y + r * 0.12f))
-                repeat(4) { i ->
-                    val angle = i * 1.5f
-                    val start = Offset(center.x + cos(angle) * r * 0.3f, center.y + sin(angle) * r * 0.3f)
-                    val end = Offset(center.x + cos(angle) * r * 0.55f, center.y + sin(angle) * r * 0.55f)
-                    drawLine(color = Color(0xFFF5E6D3), start = start, end = end, strokeWidth = 2f)
+                // Redesigned after live-testing showed the first version (two same-tone circles)
+                // was too subtle against the skin-tone base to read as anything. Dusty-rose color
+                // gives real contrast (inflamed patches genuinely do redden), an irregular jittered
+                // outline reads as "patch" rather than "bump," and thick pale flake strokes on top
+                // give visible scaling/crust texture instead of faint hairline marks.
+                val points = 8
+                val path = androidx.compose.ui.graphics.Path()
+                for (i in 0 until points) {
+                    val angle = (i.toFloat() / points) * 2 * Math.PI.toFloat()
+                    val jitterR = r * (0.55f + if (i % 3 == 0) 0.1f else -0.05f)
+                    val point = Offset(center.x + cos(angle) * jitterR, center.y + sin(angle) * jitterR)
+                    if (i == 0) path.moveTo(point.x, point.y) else path.lineTo(point.x, point.y)
+                }
+                path.close()
+                drawPath(path, color = Color(0xFFD98B7A))
+                repeat(5) { i ->
+                    val angle = i * 1.26f
+                    val start = Offset(center.x + cos(angle) * r * 0.15f, center.y + sin(angle) * r * 0.15f)
+                    val end = Offset(center.x + cos(angle) * r * 0.42f, center.y + sin(angle) * r * 0.42f)
+                    drawLine(color = Color(0xFFFDF3E7), start = start, end = end, strokeWidth = 3.5f)
                 }
             }
             LesionIconType.RING -> {
