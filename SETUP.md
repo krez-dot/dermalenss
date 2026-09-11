@@ -21,8 +21,8 @@ components. No extra manual SDK setup needed — Android Studio handles it.
 ## 2. Clone the repo
 
 ```
-git clone https://github.com/krez-dot/DermaLens.git
-cd DermaLens
+git clone https://github.com/krez-dot/dermalenss.git
+cd dermalenss
 ```
 
 Firebase Authentication is already merged into `master` — just clone and stay on `master`, no
