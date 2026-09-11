@@ -1,5 +1,6 @@
 package com.dermalens.app.ui.screens
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,12 +15,86 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.dermalens.app.ui.LocalAppSettings
+import kotlin.math.cos
+import kotlin.math.sin
+
+/**
+ * A small, original, Canvas-drawn schematic representing one [LesionIconType] -- not a real
+ * clinical photo. See LesionIconType's own doc for why: almost every dermatology reference photo
+ * available is copyrighted commercial stock, not something to embed in a shipped app without a
+ * license. This conveys just the one key visual trait each relative is actually distinguished by,
+ * on a plain skin-tone circle.
+ */
+@Composable
+private fun LesionSchematicIcon(type: LesionIconType, modifier: Modifier = Modifier) {
+    val skinTone = Color(0xFFE8C4A0)
+    Canvas(modifier = modifier.size(44.dp)) {
+        val r = size.minDimension / 2f
+        val center = Offset(size.width / 2f, size.height / 2f)
+        drawCircle(color = skinTone, radius = r, center = center)
+
+        when (type) {
+            LesionIconType.DARK_DOT -> {
+                drawCircle(color = Color(0xFF3E2723), radius = r * 0.16f, center = center)
+            }
+            LesionIconType.PALE_BUMP -> {
+                drawCircle(color = Color(0xFFFFF3E0), radius = r * 0.42f, center = center)
+                drawCircle(color = Color(0xFFE0B896), radius = r * 0.42f, center = center, style = Stroke(width = 1.5f))
+            }
+            LesionIconType.RED_BUMP -> {
+                drawCircle(color = Color(0xFFE57373), radius = r * 0.42f, center = center)
+            }
+            LesionIconType.PUS_BUMP -> {
+                drawCircle(color = Color(0xFFE57373), radius = r * 0.46f, center = center)
+                drawCircle(color = Color(0xFFFFF9C4), radius = r * 0.20f, center = center)
+            }
+            LesionIconType.DEEP_BUMP -> {
+                drawCircle(color = Color(0xFFAD4E42), radius = r * 0.58f, center = center)
+                drawCircle(color = Color(0xFF7B241C), radius = r * 0.58f, center = center, style = Stroke(width = 1.5f))
+            }
+            LesionIconType.SCALE_PATCH -> {
+                // An irregular blob (an offset-and-scaled circle union) reads as "patch," not
+                // "bump" -- a few short flake marks on top suggest scaling/crust texture.
+                drawCircle(color = Color(0xFFD7BFA6), radius = r * 0.62f, center = center.copy(x = center.x - r * 0.1f))
+                drawCircle(color = Color(0xFFD7BFA6), radius = r * 0.5f, center = center.copy(x = center.x + r * 0.22f, y = center.y + r * 0.12f))
+                repeat(4) { i ->
+                    val angle = i * 1.5f
+                    val start = Offset(center.x + cos(angle) * r * 0.3f, center.y + sin(angle) * r * 0.3f)
+                    val end = Offset(center.x + cos(angle) * r * 0.55f, center.y + sin(angle) * r * 0.55f)
+                    drawLine(color = Color(0xFFF5E6D3), start = start, end = end, strokeWidth = 2f)
+                }
+            }
+            LesionIconType.RING -> {
+                drawCircle(color = Color(0xFFE57373), radius = r * 0.55f, center = center, style = Stroke(width = r * 0.16f))
+            }
+            LesionIconType.ROUGH_BUMP -> {
+                val points = 9
+                val path = androidx.compose.ui.graphics.Path()
+                for (i in 0 until points) {
+                    val angle = (i.toFloat() / points) * 2 * Math.PI.toFloat()
+                    val jitterR = r * (0.38f + if (i % 2 == 0) 0.08f else 0f)
+                    val point = Offset(center.x + cos(angle) * jitterR, center.y + sin(angle) * jitterR)
+                    if (i == 0) path.moveTo(point.x, point.y) else path.lineTo(point.x, point.y)
+                }
+                path.close()
+                drawPath(path, color = Color(0xFFC49A78))
+            }
+            LesionIconType.FLAT_PATCH -> {
+                drawCircle(color = Color(0xFF8D6E63).copy(alpha = 0.55f), radius = r * 0.6f, center = center)
+            }
+        }
+    }
+}
 
 /**
  * Static reference screen showing a detected condition's real clinical relatives/subtypes --
@@ -89,15 +164,22 @@ fun FamilyTreeScreen(navController: NavController, condition: String) {
                         colors = CardDefaults.cardColors(containerColor = Color.White),
                         elevation = CardDefaults.cardElevation(2.dp)
                     ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Text(relative.name, fontSize = settings.textMd.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF111827))
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(relative.description, fontSize = settings.textSm.sp, color = Color(0xFF4B5563), lineHeight = 18.sp)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row {
-                                Icon(Icons.Default.AccountTree, contentDescription = null, tint = Color(0xFF9CA3AF), modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(relative.distinguishingFeature, fontSize = settings.textSm.sp, color = Color(0xFF6B7280), lineHeight = 16.sp)
+                        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.Top) {
+                            LesionSchematicIcon(
+                                type = relative.icon,
+                                modifier = Modifier.semantics { contentDescription = "Schematic illustration, not a photo" }
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(relative.name, fontSize = settings.textMd.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF111827))
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(relative.description, fontSize = settings.textSm.sp, color = Color(0xFF4B5563), lineHeight = 18.sp)
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row {
+                                    Icon(Icons.Default.AccountTree, contentDescription = null, tint = Color(0xFF9CA3AF), modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(relative.distinguishingFeature, fontSize = settings.textSm.sp, color = Color(0xFF6B7280), lineHeight = 16.sp)
+                                }
                             }
                         }
                     }
