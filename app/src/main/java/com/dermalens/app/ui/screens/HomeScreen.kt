@@ -121,7 +121,7 @@ fun DermaBottomNavBar(navController: NavController) {
 val scanningTips = listOf(
     "💡 Use natural lighting when scanning your skin for best results.",
     "📏 Hold your phone 15–20 cm away from the affected area.",
-    "🧴 Always consult a licensed dermatologist for proper diagnosis.",
+    "🧴 Always consult a dermatologist for proper diagnosis.",
     "🔍 Clean the camera lens before scanning for clearer images.",
     "☀️ Avoid scanning in direct sunlight — find a well-lit indoor area.",
     "📸 Keep your hand steady while capturing — blurry images reduce accuracy.",

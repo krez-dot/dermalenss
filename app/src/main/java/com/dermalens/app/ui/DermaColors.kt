@@ -128,7 +128,7 @@ fun DiagnosticAidDisclaimer(modifier: Modifier = Modifier) {
         colors = CardDefaults.cardColors(containerColor = if (settings.highContrast) Color(0xFFFFE0B2) else Color(0xFFFFF3E0))
     ) {
         Text(
-            "⚕️ DermaLens is a diagnostic aid only. Always consult a licensed dermatologist for professional advice.",
+            "⚕️ DermaLens is a diagnostic aid only. Always consult a dermatologist for professional advice.",
             fontSize = settings.textMd.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFF92400E),

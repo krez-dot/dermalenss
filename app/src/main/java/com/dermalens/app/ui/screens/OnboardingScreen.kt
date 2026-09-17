@@ -40,8 +40,8 @@ data class OnboardingPage(
 val onboardingPages = listOf(
     OnboardingPage("Detect Skin Conditions", "DermaLens uses advanced YOLOv11 AI to detect 6 common skin conditions instantly — right from your phone camera.", Icons.Default.Search, Color(0xFF7C3AED), Color(0xFFEDE9FE)),
     OnboardingPage("Just Point & Scan", "Simply point your camera at the affected skin area and tap scan. Get results in seconds — no internet required!", Icons.Default.CameraAlt, Color(0xFF0284C7), Color(0xFFE0F2FE)),
-    OnboardingPage("Track Your Progress", "Monitor your skin's improvement over time with detailed timelines, care guides, and nearby clinic recommendations.", Icons.Default.Timeline, Color(0xFF0D9488), Color(0xFFCCFBF1)),
-    OnboardingPage("Your Skin, Your Care", "Get personalized skincare guidance for Acne, Eczema, Melasma, Tinea, Warts, and Scabies — all in one app.", Icons.Default.LocalHospital, Color(0xFF7C3AED), Color(0xFFEDE9FE))
+    OnboardingPage("Track Your Progress", "Monitor your skin's improvement over time with detailed timelines, the Family Tree condition guide, and nearby clinic recommendations.", Icons.Default.Timeline, Color(0xFF0D9488), Color(0xFFCCFBF1)),
+    OnboardingPage("Stay Informed", "Learn more about your condition — Acne, Eczema, Melasma, Tinea, Warts, and Scabies — all explained in one app.", Icons.Default.LocalHospital, Color(0xFF7C3AED), Color(0xFFEDE9FE))
 )
 
 // ── Splash Screen ─────────────────────────────────────────────────────────────
