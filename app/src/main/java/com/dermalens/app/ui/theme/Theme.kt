@@ -35,9 +35,17 @@ private val LightColorScheme = lightColorScheme(
 
 @Composable
 fun DermaLensTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
+    // Deliberately not isSystemInDarkTheme() -- every screen in this app hardcodes its own light
+    // colors directly (purple headers, white cards, Color(0xFFF8F9FA) backgrounds) rather than
+    // reading from MaterialTheme.colorScheme, so there's no actual dark-mode content anywhere to
+    // switch to. Following the system setting here just made the *unpainted* edges (the literal
+    // system-bar-inset strips a Scaffold's default containerColor shows through) go black on any
+    // device with system dark mode on, while every real screen stayed exactly as light as always
+    // -- a real, reported bug: black status/navigation bars over an otherwise light-only app.
+    darkTheme: Boolean = false,
+    // Also off for the same reason -- dynamic color would still resolve a dark variant when the
+    // system is in dark mode, reintroducing the same mismatch through a different path.
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {

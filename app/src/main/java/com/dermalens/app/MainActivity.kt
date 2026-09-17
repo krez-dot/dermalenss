@@ -2,9 +2,11 @@ package com.dermalens.app
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -35,7 +37,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // Explicit light style, not the no-arg default -- the no-arg version follows the
+        // system's dark/light setting for the status bar and navigation bar's own appearance,
+        // but every screen in this app hardcodes light colors (purple headers, white cards)
+        // rather than actually switching with MaterialTheme's dark scheme. On a device with
+        // system dark mode on, that mismatch is exactly what shows up as black system bars
+        // sitting on top of an otherwise unchanged light-themed app.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+        )
 
         // Kicks off Maps SDK's internal renderer setup as early as possible so it's ready by
         // the time the user reaches Clinic Locator -- BitmapDescriptorFactory (used for custom
