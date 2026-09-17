@@ -43,6 +43,8 @@ import androidx.core.content.ContextCompat
 import androidx.navigation.NavController
 import com.dermalens.app.BuildConfig
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
@@ -248,6 +250,13 @@ fun ClinicLocatorScreen(navController: NavController) {
     var clinics by remember { mutableStateOf<List<Clinic>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var isOffline by remember { mutableStateOf(false) }
+    // Permission granted but a real position still couldn't be determined (GPS/location
+    // services off at the OS level, no signal, brand-new device with no cached fix) -- distinct
+    // from isOffline (no internet) and from !hasLocationPermission (never asked/denied). Real bug
+    // this replaced: silently substituting a hardcoded Tarlac City coordinate whenever
+    // FusedLocationProviderClient had no cached lastLocation, which showed clinics near a
+    // location that had nothing to do with the actual device.
+    var locationUnavailable by remember { mutableStateOf(false) }
     var retryTrigger by remember { mutableStateOf(0) }
     var locationLabel by remember { mutableStateOf("Locating...") }
     var userLat by remember { mutableStateOf(15.4755) }
@@ -273,6 +282,7 @@ fun ClinicLocatorScreen(navController: NavController) {
     LaunchedEffect(hasLocationPermission, retryTrigger) {
         isLoading = true
         isOffline = false
+        locationUnavailable = false
 
         if (!isNetworkAvailable(context)) {
             isOffline = true
@@ -293,13 +303,44 @@ fun ClinicLocatorScreen(navController: NavController) {
             clinics = emptyList()
             isLoading = false
         } else {
-            val location = suspendCancellableCoroutine<android.location.Location?> { cont ->
+            // lastLocation only returns a *cached* fix -- null on a device that's never had one
+            // (fresh install, GPS never used, or Google Play Services just hasn't cached
+            // anything yet), which is a completely normal, common state, not an edge case. The
+            // real bug this replaced: silently falling back to a hardcoded Tarlac City coordinate
+            // whenever that cache was empty, showing a real friend's real device clinics near a
+            // university city they'd never been to. getCurrentLocation() actively requests a
+            // fresh fix instead of trusting a cache that may not exist; lastLocation is still
+            // tried first since it's instant when available, with getCurrentLocation only paying
+            // its slower cost when there's genuinely nothing cached to use.
+            var location = suspendCancellableCoroutine<android.location.Location?> { cont ->
                 fusedLocationClient.lastLocation
                     .addOnSuccessListener { cont.resume(it) }
                     .addOnFailureListener { cont.resume(null) }
             }
-            val lat = location?.latitude ?: 15.4755
-            val lng = location?.longitude ?: 120.5963
+            if (location == null) {
+                location = suspendCancellableCoroutine { cont ->
+                    val cancellationSource = CancellationTokenSource()
+                    fusedLocationClient.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, cancellationSource.token)
+                        .addOnSuccessListener { cont.resume(it) }
+                        .addOnFailureListener { cont.resume(null) }
+                    cont.invokeOnCancellation { cancellationSource.cancel() }
+                }
+            }
+
+            if (location == null) {
+                // Neither a cached nor a fresh fix was available -- likely location services are
+                // off at the OS level (permission alone doesn't guarantee GPS/network location is
+                // actually enabled) or there's no signal. Honest empty state, not a guessed
+                // coordinate.
+                locationUnavailable = true
+                locationLabel = "Location unavailable"
+                clinics = emptyList()
+                isLoading = false
+                return@LaunchedEffect
+            }
+
+            val lat = location.latitude
+            val lng = location.longitude
             userLat = lat
             userLng = lng
             val geocoder = android.location.Geocoder(context)
@@ -497,6 +538,16 @@ fun ClinicLocatorScreen(navController: NavController) {
                     }
                     if (!isLoading && isOffline) {
                         item { OfflineClinicsState(onRetry = { retryTrigger++ }, onBackToHome = { navController.popBackStack() }) }
+                    } else if (!isLoading && locationUnavailable) {
+                        item {
+                            OfflineClinicsState(
+                                onRetry = { retryTrigger++ },
+                                onBackToHome = { navController.popBackStack() },
+                                icon = Icons.Default.LocationOff,
+                                title = "Couldn't Determine Your Location",
+                                message = "Make sure location services (GPS) are turned on for your device, then retry. This isn't the same as camera or app permissions -- it's a separate system setting."
+                            )
+                        }
                     } else if (!isLoading && clinics.isEmpty()) {
                         item { EmptyClinicsState() }
                     }
@@ -516,6 +567,16 @@ fun ClinicLocatorScreen(navController: NavController) {
                 ) {
                     if (!isLoading && isOffline) {
                         item { OfflineClinicsState(onRetry = { retryTrigger++ }, onBackToHome = { navController.popBackStack() }) }
+                    } else if (!isLoading && locationUnavailable) {
+                        item {
+                            OfflineClinicsState(
+                                onRetry = { retryTrigger++ },
+                                onBackToHome = { navController.popBackStack() },
+                                icon = Icons.Default.LocationOff,
+                                title = "Couldn't Determine Your Location",
+                                message = "Make sure location services (GPS) are turned on for your device, then retry. This isn't the same as camera or app permissions -- it's a separate system setting."
+                            )
+                        }
                     } else if (!isLoading && clinics.isEmpty()) {
                         item { EmptyClinicsState() }
                     }
@@ -564,7 +625,13 @@ fun ClinicLocatorScreen(navController: NavController) {
 }
 
 @Composable
-fun OfflineClinicsState(onRetry: () -> Unit, onBackToHome: () -> Unit) {
+fun OfflineClinicsState(
+    onRetry: () -> Unit,
+    onBackToHome: () -> Unit,
+    icon: androidx.compose.ui.graphics.vector.ImageVector = Icons.Default.WifiOff,
+    title: String = "No Internet Connection",
+    message: String = "The clinic locator requires an internet connection to find nearby dermatology clinics and get real-time information."
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -576,13 +643,13 @@ fun OfflineClinicsState(onRetry: () -> Unit, onBackToHome: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Box(modifier = Modifier.size(56.dp).clip(CircleShape).background(Color(0xFFF3F4F6)), contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.WifiOff, contentDescription = null, tint = Color(0xFF6B7280), modifier = Modifier.size(28.dp))
+                Icon(icon, contentDescription = null, tint = Color(0xFF6B7280), modifier = Modifier.size(28.dp))
             }
             Spacer(modifier = Modifier.height(14.dp))
-            Text("No Internet Connection", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1a1a1a))
+            Text(title, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1a1a1a))
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                "The clinic locator requires an internet connection to find nearby dermatology clinics and get real-time information.",
+                message,
                 fontSize = 12.sp,
                 color = Color.Gray,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
