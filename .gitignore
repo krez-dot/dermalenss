@@ -1,5 +1,6 @@
 *.iml
 .gradle
+.kotlin/
 /local.properties
 /.idea/caches
 /.idea/libraries
@@ -29,6 +30,7 @@ app/google-services.json
 # Training notebooks belong in Colab/Drive, not this repo -- also keeps a pasted API key
 # (Roboflow, etc.) in a scratch notebook from ever landing in git by accident.
 *.ipynb
+training/*_colab_snippet.py
 
 # Claude Code session-local state -- .claude/settings.json (repo-level config, e.g.
 # includeCoAuthoredBy) is intentionally NOT ignored and should be committed.
