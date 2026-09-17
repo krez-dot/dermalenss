@@ -42,6 +42,9 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.navigation.NavController
 import com.dermalens.app.BuildConfig
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
@@ -70,6 +73,23 @@ data class Clinic(
     val lat: Double,
     val lng: Double
 )
+
+/** Pulls just today's line out of [hours] (the full week, one line per day, Monday first --
+ *  matching Google Places' regularOpeningHours.weekdayDescriptions order) so a compact card can
+ *  show "opens/closes at X" without the user needing to tap in for the full 7-line schedule.
+ *  Falls back to the raw string as-is for the "Contact clinic for hours" case, or anything else
+ *  that isn't a real 7-line week. */
+private fun todaysHoursLine(hours: String): String {
+    val lines = hours.split("\n").filter { it.isNotBlank() }
+    if (lines.size != 7) return hours
+    // Calendar.DAY_OF_WEEK is Sunday=1..Saturday=7; convert to Monday-first index 0-6.
+    val calendarDay = java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_WEEK)
+    val mondayFirstIndex = (calendarDay + 5) % 7
+    val line = lines.getOrElse(mondayFirstIndex) { return hours }
+    // Google's line already reads "Monday: 9:00 AM - 5:00 PM" -- drop the redundant day name
+    // for a compact card that's already implicitly about "today".
+    return line.substringAfter(": ", line)
+}
 
 private fun createUserDotBitmap(context: Context): Bitmap {
     val dp = context.resources.displayMetrics.density
@@ -245,7 +265,7 @@ private suspend fun fetchRoute(fromLat: Double, fromLng: Double, toLat: Double, 
 @Composable
 fun ClinicLocatorScreen(navController: NavController) {
     val context = LocalContext.current
-    var showMap by remember { mutableStateOf(false) }
+    var showMap by remember { mutableStateOf(true) }
     var selectedClinic by remember { mutableStateOf<Clinic?>(null) }
     var clinics by remember { mutableStateOf<List<Clinic>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -356,6 +376,34 @@ fun ClinicLocatorScreen(navController: NavController) {
         }
     }
 
+    // Live-tracks the "You are here" dot as the device actually moves -- the LaunchedEffect
+    // above only ever fetches a position once (on open or Retry), so a real, reported bug was
+    // walking around with the screen open never moved the marker at all. Deliberately scoped to
+    // just the dot: doesn't re-geocode locationLabel or re-run fetchNearbyClinics on every
+    // update, since re-searching Places continuously would cost real API calls and battery for a
+    // screen whose actual job (find clinics near where you are right now) is already done by the
+    // one-shot fetch above.
+    DisposableEffect(hasLocationPermission) {
+        if (!hasLocationPermission) {
+            return@DisposableEffect onDispose {}
+        }
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 5_000L)
+            .setMinUpdateIntervalMillis(3_000L)
+            .build()
+        val callback = object : LocationCallback() {
+            override fun onLocationResult(result: LocationResult) {
+                val loc = result.lastLocation ?: return
+                userLat = loc.latitude
+                userLng = loc.longitude
+                locationUnavailable = false
+            }
+        }
+        fusedLocationClient.requestLocationUpdates(locationRequest, callback, android.os.Looper.getMainLooper())
+        onDispose {
+            fusedLocationClient.removeLocationUpdates(callback)
+        }
+    }
+
     LaunchedEffect(clinics, userLat, userLng) {
         val fetched = mutableMapOf<String, List<LatLng>>()
         clinics.forEach { clinic ->
@@ -463,8 +511,16 @@ fun ClinicLocatorScreen(navController: NavController) {
                         try { BitmapDescriptorFactory.fromBitmap(createUserDotBitmap(context)) } catch (e: Exception) { null }
                     }
 
-                    LaunchedEffect(userLat, userLng) {
-                        if (!mapCentered) {
+                    // Real bug: userLat/userLng start at a hardcoded default (Tarlac City) before
+                    // any real fetch resolves, and this effect fires immediately on first
+                    // composition too -- with those still-default values. That meant it centered
+                    // on Tarlac and set mapCentered = true before the real location ever arrived,
+                    // permanently refusing to re-center once it did (guarded by !mapCentered). The
+                    // "You are here" dot itself would move once real data came in, but the camera
+                    // view stayed stuck wherever it first happened to fire. Gating on !isLoading
+                    // ensures this only centers once the initial fetch has actually resolved.
+                    LaunchedEffect(userLat, userLng, isLoading) {
+                        if (!mapCentered && !isLoading) {
                             cameraPositionState.position = CameraPosition.fromLatLngZoom(LatLng(userLat, userLng), 14.5f)
                             mapCentered = true
                         }
@@ -475,11 +531,19 @@ fun ClinicLocatorScreen(navController: NavController) {
                         cameraPositionState = cameraPositionState,
                         uiSettings = MapUiSettings(zoomControlsEnabled = false, myLocationButtonEnabled = false)
                     ) {
-                        Marker(
-                            state = MarkerState(position = LatLng(userLat, userLng)),
-                            title = "You are here",
-                            icon = userDotIcon
-                        )
+                        // Real bug, same family as the earlier hardcoded-Tarlac fallback: when
+                        // location genuinely can't be determined, userLat/userLng just sit at
+                        // their initial default value (Tarlac City) since nothing ever assigns
+                        // them in the failure path. Unconditionally drawing a "You are here" dot
+                        // there claimed a location the app had just said, one card below, that it
+                        // didn't actually know.
+                        if (!locationUnavailable) {
+                            Marker(
+                                state = MarkerState(position = LatLng(userLat, userLng)),
+                                title = "You are here",
+                                icon = userDotIcon
+                            )
+                        }
                         clinics.forEach { clinic ->
                             val routePoints = routes[clinic.name]
                                 ?: listOf(LatLng(userLat, userLng), LatLng(clinic.lat, clinic.lng))
@@ -714,7 +778,13 @@ fun CompactClinicCard(clinic: Clinic, onClick: () -> Unit) {
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(clinic.name, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1a1a1a))
-                Text(clinic.distance, fontSize = 12.sp, color = Color.Gray)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(clinic.distance, fontSize = 12.sp, color = Color.Gray)
+                    Text(" · ", fontSize = 12.sp, color = Color.Gray)
+                    Icon(Icons.Default.AccessTime, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(12.dp))
+                    Spacer(modifier = Modifier.width(2.dp))
+                    Text(todaysHoursLine(clinic.hours), fontSize = 12.sp, color = Color.Gray, maxLines = 1)
+                }
             }
             Box(modifier = Modifier.background(if (clinic.openNow) Color(0xFFE8F5E9) else Color(0xFFFFEBEE), RoundedCornerShape(20.dp)).padding(horizontal = 8.dp, vertical = 4.dp)) {
                 Text(if (clinic.openNow) "Open" else "Closed", fontSize = 11.sp, color = if (clinic.openNow) Color(0xFF2E7D32) else Color(0xFFC62828), fontWeight = FontWeight.SemiBold)
@@ -759,7 +829,7 @@ fun FullClinicCard(clinic: Clinic, onClick: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.AccessTime, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(14.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text(clinic.hours, fontSize = 12.sp, color = Color.Gray)
+                Text(todaysHoursLine(clinic.hours), fontSize = 12.sp, color = Color.Gray, maxLines = 1)
             }
         }
     }
