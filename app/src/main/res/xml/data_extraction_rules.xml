@@ -4,10 +4,19 @@
    for details.
 -->
 <data-extraction-rules>
+    <!-- Same gap as backup_rules.xml (that file covers pre-API-31 devices, this one covers 31+):
+         only "database" was excluded, leaving real scan photos under getFilesDir() (domain
+         "file") eligible for cloud backup and device-to-device transfer. Found via a live
+         security pass (2026-09-17), after scan photos started being saved on every scan rather
+         than only contributed ones. -->
     <cloud-backup>
         <exclude domain="database" path="."/>
+        <exclude domain="file" path="scan_photos/"/>
+        <exclude domain="file" path="contributed_scans/"/>
     </cloud-backup>
     <device-transfer>
         <exclude domain="database" path="."/>
+        <exclude domain="file" path="scan_photos/"/>
+        <exclude domain="file" path="contributed_scans/"/>
     </device-transfer>
 </data-extraction-rules>

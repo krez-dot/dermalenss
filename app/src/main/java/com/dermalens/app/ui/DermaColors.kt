@@ -50,34 +50,6 @@ val DermaGreen = Color(0xFF7C3AED)
 val DermaGreenLight = Color(0xFFEDE9FE)
 val DermaGreenDark = Color(0xFF6D28D9)
 
-/** Hashes [password] with a fresh random salt. Stored format: "saltHex:hashHex". */
-fun hashPassword(password: String): String {
-    val saltBytes = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
-    val salt = saltBytes.joinToString("") { "%02x".format(it) }
-    return "$salt:${sha256Hex(salt + password)}"
-}
-
-/**
- * Verifies [password] against a [storedHash] produced by [hashPassword]. Also accepts the
- * legacy unsalted format (a bare SHA-256 hex digest, no ":") for accounts created before
- * salting was added, so existing logins keep working without a forced re-registration.
- */
-fun verifyPassword(password: String, storedHash: String): Boolean {
-    val separatorIndex = storedHash.indexOf(':')
-    if (separatorIndex < 0) {
-        // Legacy unsalted hash.
-        return sha256Hex(password) == storedHash
-    }
-    val salt = storedHash.substring(0, separatorIndex)
-    val expectedHash = storedHash.substring(separatorIndex + 1)
-    return sha256Hex(salt + password) == expectedHash
-}
-
-private fun sha256Hex(value: String): String {
-    val digest = java.security.MessageDigest.getInstance("SHA-256")
-    val hashBytes = digest.digest(value.toByteArray())
-    return hashBytes.joinToString("") { "%02x".format(it) }
-}
 
 /**
  * Scales a clickable element down slightly while pressed. Used in place of Material's default

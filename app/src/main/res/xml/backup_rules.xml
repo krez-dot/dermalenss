@@ -7,4 +7,11 @@
 -->
 <full-backup-content>
     <exclude domain="database" path="."/>
+    <!-- Real scan photos live under getFilesDir() (domain "file"), not the database. Excluding
+         only "database" left every saved scan photo eligible for Android's automatic backup,
+         contradicting the Privacy Policy's "stored locally on your device" framing. Confirmed via
+         a live security pass (2026-09-17): both the current scan_photos folder and the older,
+         now-unused contributed_scans folder (renamed but never cleaned up) contain real images. -->
+    <exclude domain="file" path="scan_photos/"/>
+    <exclude domain="file" path="contributed_scans/"/>
 </full-backup-content>
