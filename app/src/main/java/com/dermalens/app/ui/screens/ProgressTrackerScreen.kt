@@ -24,18 +24,20 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import coil.compose.AsyncImage
 import com.dermalens.app.data.db.DermaDatabase
 import com.dermalens.app.navigation.Screen
 import com.dermalens.app.ui.LocalAppSettings
 import kotlinx.coroutines.launch
 
-data class ScanEntry(val id: Int, val date: String, val confidence: Float, val notes: String)
+data class ScanEntry(val id: Int, val date: String, val confidence: Float, val notes: String, val imagePath: String = "")
 data class ConditionTrack(val condition: String, val color: Color, val emoji: String, val scans: List<ScanEntry>)
 
 val mockProgressData = listOf(
@@ -84,13 +86,19 @@ fun ProgressTrackerScreen(navController: NavController) {
                     condition = condition,
                     color = mockTrack?.color ?: Color(0xFF7C3AED),
                     emoji = mockTrack?.emoji ?: "🔵",
-                    scans = scanList.map { scan ->
+                    // Ascending by date (oldest first) -- the DAO query itself returns newest
+                    // first (for other screens that want that), but this timeline's visuals
+                    // (filled dot, highlighted card, "Latest scan" label) are built around the
+                    // *last* list item being the most recent one, matching the natural top-to-
+                    // bottom "journey" reading of a progress timeline.
+                    scans = scanList.sortedBy { it.scanDate }.map { scan ->
                         ScanEntry(
                             id = scan.id,
                             date = java.text.SimpleDateFormat("MMM dd, yyyy • h:mm a", java.util.Locale.getDefault())
                                 .format(java.util.Date(scan.scanDate)),
                             confidence = scan.confidence,
-                            notes = scan.notes
+                            notes = scan.notes,
+                            imagePath = scan.imagePath
                         )
                     }
                 )
@@ -209,6 +217,15 @@ fun ProgressTrackerScreen(navController: NavController) {
                                     db.scanRecordDao().deleteScan(scanId)
                                     refreshKey++
                                 }
+                            },
+                            onEditNote = { scanId, newNote ->
+                                scope.launch {
+                                    db.scanRecordDao().updateNotes(scanId, newNote)
+                                    refreshKey++
+                                }
+                            },
+                            onOpenScan = { scan ->
+                                navController.navigate(Screen.ScanResult.createRoute(imageUri = scan.imagePath.ifEmpty { null }, scanId = scan.id))
                             }
                         )
                         Spacer(modifier = Modifier.height(12.dp))
@@ -249,7 +266,7 @@ fun StatCard(value: String, label: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun ConditionTrackCard(track: ConditionTrack, onScanAgain: () -> Unit, onDeleteScan: (Int) -> Unit) {
+fun ConditionTrackCard(track: ConditionTrack, onScanAgain: () -> Unit, onDeleteScan: (Int) -> Unit, onEditNote: (Int, String) -> Unit, onOpenScan: (ScanEntry) -> Unit) {
     var isExpanded by remember { mutableStateOf(true) }
     val settings = LocalAppSettings.current
 
@@ -312,7 +329,9 @@ fun ConditionTrackCard(track: ConditionTrack, onScanAgain: () -> Unit, onDeleteS
                             isFirst = index == 0,
                             isLast = index == track.scans.size - 1,
                             color = track.color,
-                            onDelete = { onDeleteScan(scan.id) }
+                            onDelete = { onDeleteScan(scan.id) },
+                            onEditNote = { newNote -> onEditNote(scan.id, newNote) },
+                            onOpenScan = { onOpenScan(scan) }
                         )
                     }
 
@@ -335,9 +354,11 @@ fun ConditionTrackCard(track: ConditionTrack, onScanAgain: () -> Unit, onDeleteS
 }
 
 @Composable
-fun TimelineNode(scan: ScanEntry, isFirst: Boolean, isLast: Boolean, color: Color, onDelete: () -> Unit) {
+fun TimelineNode(scan: ScanEntry, isFirst: Boolean, isLast: Boolean, color: Color, onDelete: () -> Unit, onEditNote: (String) -> Unit, onOpenScan: () -> Unit) {
     val settings = LocalAppSettings.current
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var showEditNoteDialog by remember { mutableStateOf(false) }
+    var editedNote by remember(scan.id, scan.notes) { mutableStateOf(scan.notes) }
 
     if (showDeleteDialog) {
         AlertDialog(
@@ -354,6 +375,36 @@ fun TimelineNode(scan: ScanEntry, isFirst: Boolean, isLast: Boolean, color: Colo
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("Cancel", color = Color(0xFF6B7280))
+                }
+            }
+        )
+    }
+
+    if (showEditNoteDialog) {
+        AlertDialog(
+            onDismissRequest = { showEditNoteDialog = false },
+            containerColor = Color.White,
+            titleContentColor = Color(0xFF111827),
+            textContentColor = Color(0xFF374151),
+            title = { Text("Edit Note", fontWeight = FontWeight.Bold) },
+            text = {
+                OutlinedTextField(
+                    value = editedNote,
+                    onValueChange = { editedNote = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 5,
+                    placeholder = { Text("How does it look today?") }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showEditNoteDialog = false; onEditNote(editedNote) }) {
+                    Text("Save", color = color, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editedNote = scan.notes; showEditNoteDialog = false }) {
                     Text("Cancel", color = Color(0xFF6B7280))
                 }
             }
@@ -379,7 +430,8 @@ fun TimelineNode(scan: ScanEntry, isFirst: Boolean, isLast: Boolean, color: Colo
 
         Card(
             modifier = Modifier.fillMaxWidth().padding(bottom = if (!isLast) 4.dp else 0.dp)
-                .then(if (settings.highContrast && isLast) Modifier.border(1.dp, color, RoundedCornerShape(12.dp)) else Modifier),
+                .then(if (settings.highContrast && isLast) Modifier.border(1.dp, color, RoundedCornerShape(12.dp)) else Modifier)
+                .clickable { onOpenScan() },
             shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(
                 containerColor = when {
@@ -403,8 +455,22 @@ fun TimelineNode(scan: ScanEntry, isFirst: Boolean, isLast: Boolean, color: Colo
                         }
                     }
                 }
+                if (scan.imagePath.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    AsyncImage(
+                        model = scan.imagePath,
+                        contentDescription = "Scan photo from ${scan.date}",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxWidth().height(140.dp).clip(RoundedCornerShape(8.dp))
+                    )
+                }
                 Spacer(modifier = Modifier.height(4.dp))
-                Text(scan.notes, fontSize = settings.textBase.sp, color = settings.textPrimary, lineHeight = 16.sp)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+                    Text(scan.notes, fontSize = settings.textBase.sp, color = settings.textPrimary, lineHeight = 16.sp, modifier = Modifier.weight(1f))
+                    IconButton(onClick = { editedNote = scan.notes; showEditNoteDialog = true }, modifier = Modifier.size(20.dp)) {
+                        Icon(Icons.Default.Edit, contentDescription = "Edit note", tint = Color(0xFF9CA3AF), modifier = Modifier.size(14.dp))
+                    }
+                }
                 if (isLast) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -417,3 +483,4 @@ fun TimelineNode(scan: ScanEntry, isFirst: Boolean, isLast: Boolean, color: Colo
         }
     }
 }
+

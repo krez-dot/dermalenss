@@ -20,9 +20,13 @@ sealed class Screen(val route: String) {
     object VerifyEmail : Screen("verify_email")
     object Home : Screen("home")
     object Scan : Screen("scan")
-    object ScanResult : Screen("scan_result?imageUri={imageUri}") {
-        fun createRoute(imageUri: String?) =
-            if (imageUri != null) "scan_result?imageUri=${android.net.Uri.encode(imageUri)}" else "scan_result"
+    object ScanResult : Screen("scan_result?imageUri={imageUri}&scanId={scanId}") {
+        // scanId defaults to -1 ("not viewing history") so the two existing call sites (a fresh
+        // scan from CameraScreen, which only ever passes imageUri) don't need to change at all.
+        // Passing a real scanId (from Progress Tracker) tells ScanResultScreen to load that
+        // saved record instead of running a brand new inference on the image.
+        fun createRoute(imageUri: String?, scanId: Int = -1) =
+            "scan_result?imageUri=${imageUri?.let { android.net.Uri.encode(it) } ?: ""}&scanId=$scanId"
     }
     object ProgressTracker : Screen("progress_tracker")
     object FamilyTree : Screen("family_tree/{condition}") {
@@ -71,15 +75,22 @@ fun DermaLensNavGraph(
         }
         composable(
             Screen.ScanResult.route,
-            arguments = listOf(navArgument("imageUri") {
-                type = NavType.StringType
-                nullable = true
-                defaultValue = null
-            })
+            arguments = listOf(
+                navArgument("imageUri") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                },
+                navArgument("scanId") {
+                    type = NavType.IntType
+                    defaultValue = -1
+                }
+            )
         ) { backStackEntry ->
             ScanResultScreen(
                 navController = navController,
-                imageUri = backStackEntry.arguments?.getString("imageUri")
+                imageUri = backStackEntry.arguments?.getString("imageUri"),
+                scanId = backStackEntry.arguments?.getInt("scanId") ?: -1
             )
         }
         composable(Screen.ProgressTracker.route) {

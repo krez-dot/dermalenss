@@ -25,6 +25,9 @@ interface ScanRecordDao {
     @Query("DELETE FROM scan_records WHERE id = :scanId")
     suspend fun deleteScan(scanId: Int)
 
+    @Query("SELECT * FROM scan_records WHERE id = :scanId LIMIT 1")
+    suspend fun getScanById(scanId: Int): ScanRecord?
+
     @Query("SELECT DISTINCT condition FROM scan_records WHERE userId = :userId")
     suspend fun getConditionsByUser(userId: Int): List<String>
 
@@ -35,4 +38,7 @@ interface ScanRecordDao {
 
     @Query("UPDATE scan_records SET uploadedForTraining = 1 WHERE id = :scanId")
     suspend fun markContributionUploaded(scanId: Int)
+
+    @Query("UPDATE scan_records SET notes = :notes WHERE id = :scanId")
+    suspend fun updateNotes(scanId: Int, notes: String)
 }

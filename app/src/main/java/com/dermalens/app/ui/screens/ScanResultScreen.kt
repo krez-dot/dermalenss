@@ -123,11 +123,19 @@ private suspend fun saveScan(
     }
     if (user == null) return existingScanId
 
-    var savedImagePath = ""
-    if (contribute && imageUri != null) {
+    // Reload the existing row (if any) so a second save on the same scan -- e.g. Save to
+    // History, then Contribute to Research afterward -- reuses the already-saved photo and
+    // preserves any note the user already typed, instead of duplicating the file on disk or
+    // silently resetting a custom note back to the default "Scanned on ..." text.
+    val existingRecord = existingScanId?.let { db.scanRecordDao().getScanById(it) }
+
+    // Every save keeps the photo now, not just contributed ones -- Progress Tracker shows it per
+    // entry so a user can actually see their condition over time, not just a confidence number.
+    var savedImagePath = existingRecord?.imagePath ?: ""
+    if (savedImagePath.isEmpty() && imageUri != null) {
         savedImagePath = withContext(Dispatchers.IO) {
             try {
-                val dir = java.io.File(context.filesDir, "contributed_scans")
+                val dir = java.io.File(context.filesDir, "scan_photos")
                 dir.mkdirs()
                 val file = java.io.File(dir, "${System.currentTimeMillis()}.jpg")
                 context.contentResolver.openInputStream(android.net.Uri.parse(imageUri))?.use { input ->
@@ -138,6 +146,9 @@ private suspend fun saveScan(
         }
     }
 
+    val notes = existingRecord?.notes
+        ?: "Scanned on ${java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()).format(java.util.Date())}"
+
     val id = db.scanRecordDao().insertScan(
         ScanRecord(
             id = existingScanId ?: 0,
@@ -145,7 +156,7 @@ private suspend fun saveScan(
             condition = result.condition,
             confidence = result.confidence,
             severity = result.severity,
-            notes = "Scanned on ${java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()).format(java.util.Date())}",
+            notes = notes,
             imagePath = savedImagePath,
             contributedForTraining = contribute && savedImagePath.isNotEmpty()
         )
@@ -155,16 +166,33 @@ private suspend fun saveScan(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ScanResultScreen(navController: NavController, imageUri: String? = null) {
+fun ScanResultScreen(navController: NavController, imageUri: String? = null, scanId: Int = -1) {
     val settings = LocalAppSettings.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // -1 means "a fresh scan just taken" (run real inference below). Any other value means
+    // "viewing a past scan from Progress Tracker" -- reload its already-decided result instead
+    // of re-running inference, since re-inferring could disagree with what was actually saved
+    // (a different bundled model since then, a different confidence threshold, etc.) and would
+    // be showing a *new* judgment under the guise of historical record.
+    val isHistoryView = scanId != -1
 
-    val loadedResult by produceState<DetectionResult?>(initialValue = null, imageUri) {
+    val loadedResult by produceState<DetectionResult?>(initialValue = null, imageUri, scanId) {
         value = withContext(Dispatchers.Default) {
-            // Never fall back to mockDetectionResults.random() here: that turned any inference
-            // failure into a randomly invented diagnosis, complete with a confidence number.
-            imageUri?.let { runYoloInference(context, it) } ?: analysisFailedResult()
+            if (isHistoryView) {
+                val record = DermaDatabase.getDatabase(context).scanRecordDao().getScanById(scanId)
+                if (record == null) {
+                    analysisFailedResult()
+                } else {
+                    val template = mockDetectionResults.associateBy { it.condition }[record.condition]
+                    template?.copy(confidence = record.confidence, severity = record.severity) ?: analysisFailedResult()
+                }
+            } else {
+                // Never fall back to mockDetectionResults.random() here: that turned any
+                // inference failure into a randomly invented diagnosis, complete with a
+                // confidence number.
+                imageUri?.let { runYoloInference(context, it) } ?: analysisFailedResult()
+            }
         }
     }
 
@@ -187,11 +215,18 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null) {
         return
     }
     val result = loadedResult!!
-    var isSaved by remember { mutableStateOf(false) }
+    // Already true/set when viewing history -- this scan is, by definition, already saved, and
+    // reusing its real id keeps any further action (e.g. Contribute to Research, tapped later
+    // than the original save) updating this same row instead of inserting a duplicate.
+    var isSaved by remember { mutableStateOf(isHistoryView) }
     var isContributed by remember { mutableStateOf(false) }
-    // Reused across Save to History and Contribute to Research so a user who taps both ends up
-    // with one updated row, not two -- Room's REPLACE conflict strategy overwrites by id.
-    var savedScanId by remember { mutableStateOf<Int?>(null) }
+    var savedScanId by remember { mutableStateOf(if (isHistoryView) scanId else null) }
+
+    LaunchedEffect(scanId) {
+        if (isHistoryView) {
+            isContributed = DermaDatabase.getDatabase(context).scanRecordDao().getScanById(scanId)?.contributedForTraining ?: false
+        }
+    }
     // Read once, at composable entry, purely to decide whether the Contribute button shows at
     // all -- someone who opted out entirely in Profile shouldn't see a per-scan prompt for a
     // feature they've already declined.
@@ -336,7 +371,13 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null) {
                     ) {
                         if (imageUri != null) {
                             AsyncImage(
-                                model = android.net.Uri.parse(imageUri),
+                                // A plain string model, not Uri.parse(imageUri) -- a fresh scan's
+                                // imageUri is a real content://.../file:// URI (needs no help),
+                                // but a historical scan (scanId != -1) passes a bare absolute
+                                // file path with no scheme, which Uri.parse would hand to Coil
+                                // un-resolvable. Coil's String overload correctly detects and
+                                // loads both cases on its own.
+                                model = imageUri,
                                 contentDescription = "Scanned image",
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Fit,
