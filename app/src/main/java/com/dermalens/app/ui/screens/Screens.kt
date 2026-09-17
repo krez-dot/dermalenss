@@ -51,6 +51,17 @@ import kotlinx.coroutines.launch
 fun isValidEmail(email: String): Boolean =
     email.isNotBlank() && android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()
 
+/** Only enforced at Register -- Login just needs 6+ characters (see LoginScreen's own validate()),
+ *  since an existing account's password was created under whatever rules were live at the time
+ *  and Firebase, not this check, is the real authority on whether it's correct. Requiring 8+ chars
+ *  with upper/lower/digit/special here only shapes *new* passwords going forward. */
+fun isStrongPassword(password: String): Boolean =
+    password.length >= 8 &&
+        password.any { it.isUpperCase() } &&
+        password.any { it.isLowerCase() } &&
+        password.any { it.isDigit() } &&
+        password.any { !it.isLetterOrDigit() }
+
 /** Translates Firebase Auth's exception types into short, user-facing messages, rather than
  * surfacing Firebase's raw internal wording. Used by both the auth screens and Edit Profile's
  * password-change flow. */
@@ -304,7 +315,10 @@ fun RegisterScreen(navController: NavController) {
         var valid = true
         if (name.isBlank()) { nameError = "Name is required"; valid = false } else nameError = ""
         if (!isValidEmail(email)) { emailError = "Enter a valid email"; valid = false } else emailError = ""
-        if (password.length < 6) { passwordError = "Password must be at least 6 characters"; valid = false } else passwordError = ""
+        if (!isStrongPassword(password)) {
+            passwordError = "Must be 8+ characters with an uppercase letter, lowercase letter, number, and special character"
+            valid = false
+        } else passwordError = ""
         if (confirmPassword != password) { confirmPasswordError = "Passwords do not match"; valid = false } else confirmPasswordError = ""
         return valid
     }
@@ -436,7 +450,7 @@ fun RegisterScreen(navController: NavController) {
                     PrivacySection("Data Storage", "Scan history, results, and app preferences are stored locally on your device. Your email and password are managed by Firebase Authentication (Google's infrastructure) for account verification and sign-in -- your password is never visible to us in plain text. We do not sell, rent, or share your personal information with third parties.")
                     PrivacySection("Research Contributions", "Contribution is entirely opt-in. You may toggle this off at any time in Profile > Contribute to Research. If enabled, contributed images are uploaded to secure cloud storage over Wi-Fi for use in improving the detection model -- the upload is anonymous and contains no name, email, or account information, only the image and its detected condition.")
                     PrivacySection("Your Rights", "You may delete your account and all associated data at any time. Scan records can be individually deleted from the Progress Tracker.")
-                    PrivacySection("Medical Disclaimer", "DermaLens is for informational reference only and does not constitute medical advice. Always consult a licensed dermatologist for diagnosis and treatment.")
+                    PrivacySection("Medical Disclaimer", "DermaLens is for informational reference only and does not constitute medical advice. Always consult a dermatologist for diagnosis and treatment.")
                     PrivacySection("Contact", "For privacy concerns, contact us through the app's feedback channel.")
                 }
             },

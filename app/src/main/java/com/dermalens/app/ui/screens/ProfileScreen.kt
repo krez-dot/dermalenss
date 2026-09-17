@@ -32,6 +32,7 @@ import androidx.compose.runtime.LaunchedEffect
 import com.dermalens.app.data.db.DermaDatabase
 import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -49,10 +50,15 @@ private suspend fun <T> com.google.android.gms.tasks.Task<T>.awaitTask(): T = su
 fun ProfileScreen(navController: NavController) {
     val context = LocalContext.current
     val settings = LocalAppSettings.current
+    val scope = rememberCoroutineScope()
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
     var showPrivacyDialog by remember { mutableStateOf(false) }
     var showContributeDialog by remember { mutableStateOf(false) }
+    var showDeleteAccountDialog by remember { mutableStateOf(false) }
+    var deleteAccountPassword by remember { mutableStateOf("") }
+    var deleteAccountError by remember { mutableStateOf("") }
+    var isDeletingAccount by remember { mutableStateOf(false) }
 
     val db = remember { DermaDatabase.getDatabase(context) }
     var userName by remember { mutableStateOf("User") }
@@ -163,6 +169,15 @@ fun ProfileScreen(navController: NavController) {
                     } else {
                         com.dermalens.app.worker.NotificationScheduler.cancelReminder(context)
                     }
+                })
+                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = if (settings.highContrast) Color(0xFFCCCCCC) else Color(0xFFF3F4F6))
+                // Fires a real notification ~5s later via a one-time WorkRequest, not a fake
+                // in-app toast pretending to be one -- see NotificationScheduler.scheduleTestReminder
+                // and feedback_workmanager_testing memory: force-running a periodic job directly is
+                // unreliable, a genuine OneTimeWorkRequest is the reliable way to demo this on demand.
+                ProfileMenuItem(icon = Icons.Default.NotificationsActive, iconBg = Color(0xFFFEF3C7), iconTint = Color(0xFFD97706), title = "Test Notification", subtitle = "Send a sample reminder in ~5 seconds", onClick = {
+                    com.dermalens.app.worker.NotificationScheduler.scheduleTestReminder(context)
+                    android.widget.Toast.makeText(context, "Test notification queued -- check your notification shade in ~5s", android.widget.Toast.LENGTH_SHORT).show()
                 })
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = if (settings.highContrast) Color(0xFFCCCCCC) else Color(0xFFF3F4F6))
                 ProfileMenuItemSwitch(icon = Icons.Default.Science, iconBg = Color(0xFFF5F3FF), iconTint = Color(0xFF7C3AED), title = "Contribute to Research", subtitle = if (contributeData) "Your scans help improve DermaLens" else "Help us improve for Filipino skin tones", checked = contributeData, onCheckedChange = {
@@ -280,6 +295,27 @@ fun ProfileScreen(navController: NavController) {
                 }
             }
 
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Delete Account -- fulfills the promise already made in the Privacy Policy's "Your
+            // Rights" section ("You may delete your account and all associated data at any
+            // time"), which had no actual implementation behind it until now.
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).clickable {
+                    deleteAccountPassword = ""; deleteAccountError = ""; showDeleteAccountDialog = true
+                }.then(if (settings.highContrast) Modifier.border(1.dp, Color(0xFF7F1D1D), RoundedCornerShape(14.dp)) else Modifier),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = if (settings.highContrast) Color(0xFFFECACA) else Color(0xFFFEF2F2)),
+                elevation = CardDefaults.cardElevation(0.dp),
+                border = if (settings.highContrast) null else BorderStroke(1.dp, Color(0xFFFECACA))
+            ) {
+                Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                    Icon(Icons.Default.DeleteForever, contentDescription = "Delete Account", tint = Color(0xFF7F1D1D), modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text("Delete Account", fontSize = settings.textLg.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF7F1D1D))
+                }
+            }
+
             Spacer(modifier = Modifier.height(16.dp))
             Text("⚕️ DermaLens is a capstone project by Tarlac State University.\nFor educational and research purposes only.", fontSize = settings.textSm.sp, color = settings.textSecondary, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp), lineHeight = 16.sp)
             Spacer(modifier = Modifier.height(24.dp))
@@ -311,6 +347,110 @@ fun ProfileScreen(navController: NavController) {
             },
             dismissButton = {
                 OutlinedButton(onClick = { showLogoutDialog = false }, shape = RoundedCornerShape(10.dp)) { Text("Cancel", fontSize = settings.textMd.sp) }
+            },
+            shape = RoundedCornerShape(16.dp),
+            containerColor = Color.White,
+            titleContentColor = Color(0xFF111827),
+            textContentColor = Color(0xFF374151)
+        )
+    }
+
+    // Delete Account Dialog -- requires reauthentication (Firebase rejects delete() on a stale
+    // session) and deletes local scan records + their image files before removing the Firebase
+    // account itself, so this actually fulfills the Privacy Policy's existing "you may delete
+    // your account and all associated data at any time" promise instead of leaving it unbuilt.
+    if (showDeleteAccountDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isDeletingAccount) showDeleteAccountDialog = false },
+            icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = Color(0xFF7F1D1D)) },
+            title = { Text("Delete Account", fontWeight = FontWeight.Bold, fontSize = settings.textXl.sp) },
+            text = {
+                Column {
+                    Text(
+                        "This permanently deletes your account, scan history, and saved images. This cannot be undone. Enter your password to confirm.",
+                        color = settings.textPrimary,
+                        fontSize = settings.textMd.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = deleteAccountPassword,
+                        onValueChange = { deleteAccountPassword = it; deleteAccountError = "" },
+                        label = { Text("Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        enabled = !isDeletingAccount,
+                        isError = deleteAccountError.isNotEmpty(),
+                        supportingText = { if (deleteAccountError.isNotEmpty()) Text(deleteAccountError, color = Color(0xFFDC2626)) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (deleteAccountPassword.isEmpty()) {
+                            deleteAccountError = "Enter your password to confirm."
+                            return@Button
+                        }
+                        isDeletingAccount = true
+                        scope.launch {
+                            try {
+                                val firebaseUser = FirebaseAuth.getInstance().currentUser
+                                val prefs = context.getSharedPreferences(DermaPrefs.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                                val savedEmail = prefs.getString(DermaPrefs.KEY_USER_EMAIL, "") ?: ""
+                                if (firebaseUser == null || savedEmail.isBlank()) {
+                                    deleteAccountError = "Your session has expired. Please log out and back in."
+                                    isDeletingAccount = false
+                                    return@launch
+                                }
+
+                                val credential = EmailAuthProvider.getCredential(savedEmail, deleteAccountPassword)
+                                firebaseUser.reauthenticate(credential).awaitTask()
+
+                                val db = DermaDatabase.getDatabase(context)
+                                val user = db.userDao().getUserByEmail(savedEmail)
+                                if (user != null) {
+                                    // Real files on disk, not just DB rows -- "all associated
+                                    // data" includes what's actually saved locally.
+                                    db.scanRecordDao().getScansByUserOnce(user.userId).forEach { scan ->
+                                        if (scan.imagePath.isNotEmpty()) {
+                                            try { java.io.File(scan.imagePath).delete() } catch (e: Exception) { }
+                                        }
+                                        db.scanRecordDao().deleteScan(scan.id)
+                                    }
+                                    db.userDao().deleteUserById(user.userId)
+                                }
+
+                                firebaseUser.delete().awaitTask()
+
+                                prefs.edit()
+                                    .putBoolean(DermaPrefs.KEY_IS_LOGGED_IN, false)
+                                    .remove(DermaPrefs.KEY_USER_EMAIL)
+                                    .apply()
+
+                                showDeleteAccountDialog = false
+                                isDeletingAccount = false
+                                navController.navigate(Screen.Login.route) { popUpTo(Screen.Home.route) { inclusive = true } }
+                            } catch (e: Exception) {
+                                deleteAccountError = firebaseAuthErrorMessage(e)
+                                isDeletingAccount = false
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7F1D1D)),
+                    shape = RoundedCornerShape(10.dp),
+                    enabled = !isDeletingAccount
+                ) {
+                    if (isDeletingAccount) {
+                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Delete Account", fontSize = settings.textMd.sp)
+                    }
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showDeleteAccountDialog = false }, shape = RoundedCornerShape(10.dp), enabled = !isDeletingAccount) { Text("Cancel", fontSize = settings.textMd.sp) }
             },
             shape = RoundedCornerShape(16.dp),
             containerColor = Color.White,
@@ -372,7 +512,7 @@ fun ProfileScreen(navController: NavController) {
                     PrivacySection("3. Data Storage", "All personal data and scan records are stored locally on your device using a secure Room database. DermaLens does not transmit your personal information or scan images to any external server or cloud service.")
                     PrivacySection("4. Camera & Gallery Access", "Camera and gallery access is used exclusively to capture or select skin images for AI analysis. Images are processed on-device and are never uploaded, stored permanently, or shared with third parties.")
                     PrivacySection("5. Location Access", "Location is accessed only when you use the Clinic Locator feature to find nearby dermatology clinics. Location data is not stored or logged.")
-                    PrivacySection("6. AI Disclaimer", "DermaLens uses an on-device AI model (YOLOv11 TFLite) for skin condition detection. Results are for reference only and do not constitute medical advice. Always consult a licensed dermatologist for diagnosis and treatment.")
+                    PrivacySection("6. AI Disclaimer", "DermaLens uses an on-device AI model (YOLOv11 TFLite) for skin condition detection. Results are for reference only and do not constitute medical advice. Always consult a dermatologist for diagnosis and treatment.")
                     PrivacySection("7. Children's Privacy", "DermaLens is not intended for users under the age of 13. We do not knowingly collect data from children.")
                     PrivacySection("8. Contact", "DermaLens is a capstone project developed at Tarlac State University, 2026. For questions or concerns, please contact the development team through your institution.")
                 }
@@ -469,7 +609,10 @@ fun EditProfileScreen(navController: NavController) {
             if (newPassword.isNotEmpty()) {
                 if (currentPassword.isEmpty()) { errorMessage = "Enter your current password to set a new one."; return@LaunchedEffect }
                 if (newPassword != confirmPassword) { errorMessage = "New passwords do not match."; return@LaunchedEffect }
-                if (newPassword.length < 6) { errorMessage = "Password must be at least 6 characters."; return@LaunchedEffect }
+                if (!isStrongPassword(newPassword)) {
+                    errorMessage = "Must be 8+ characters with an uppercase letter, lowercase letter, number, and special character."
+                    return@LaunchedEffect
+                }
 
                 val firebaseUser = FirebaseAuth.getInstance().currentUser
                 if (firebaseUser == null) { errorMessage = "Your session has expired. Please log out and back in."; return@LaunchedEffect }
