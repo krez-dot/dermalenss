@@ -287,6 +287,13 @@ fun ClinicLocatorScreen(navController: NavController) {
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         )
     }
+    // Real bug this fixed: this screen had no permanently-denied handling at all, unlike
+    // CameraScreen's. The "Allow" banner just kept calling permissionLauncher.launch() forever,
+    // which silently no-ops once Android stops showing the dialog (after a "Don't allow" that
+    // sets shouldShowRequestPermissionRationale to false) -- the button looked broken with zero
+    // explanation. Same fix as CameraPermissionDeniedScreen: detect it and offer Open Settings.
+    var locationPermanentlyDenied by remember { mutableStateOf(false) }
+    val activity = context as? android.app.Activity
 
     var routes by remember { mutableStateOf<Map<String, List<LatLng>>>(emptyMap()) }
 
@@ -297,6 +304,20 @@ fun ClinicLocatorScreen(navController: NavController) {
     ) { permissions ->
         hasLocationPermission = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
                 permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (!hasLocationPermission && activity != null) {
+            locationPermanentlyDenied = !androidx.core.app.ActivityCompat.shouldShowRequestPermissionRationale(
+                activity, Manifest.permission.ACCESS_FINE_LOCATION
+            )
+        } else if (hasLocationPermission) {
+            locationPermanentlyDenied = false
+        }
+    }
+
+    fun openAppSettings() {
+        val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = android.net.Uri.fromParts("package", context.packageName, null)
+        }
+        context.startActivity(intent)
     }
 
     LaunchedEffect(hasLocationPermission, retryTrigger) {
@@ -318,6 +339,11 @@ fun ClinicLocatorScreen(navController: NavController) {
             // "Location access needed" banner above look wrong (real results showing right below
             // a banner claiming access is needed). Nothing renders until permission is actually
             // granted, so the banner and the empty results screen agree with each other.
+            // locationUnavailable = true here too (not just on a failed fetch below) -- otherwise
+            // userLat/userLng sit at their hardcoded Tarlac default with nothing marking them as
+            // fake, and the marker guard further down draws a false "you are here" dot on the map
+            // while this exact banner is telling the user location access is needed.
+            locationUnavailable = true
             permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
             locationLabel = "Location unavailable"
             clinics = emptyList()
@@ -457,12 +483,16 @@ fun ClinicLocatorScreen(navController: NavController) {
                         Spacer(modifier = Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Location access needed", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE65100))
-                            Text("Enable location to find clinics near you", fontSize = 12.sp, color = Color(0xFFE65100))
+                            Text(
+                                if (locationPermanentlyDenied) "Enable it from Settings to find clinics near you" else "Enable location to find clinics near you",
+                                fontSize = 12.sp, color = Color(0xFFE65100)
+                            )
                         }
                         TextButton(onClick = {
-                            permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                            if (locationPermanentlyDenied) openAppSettings()
+                            else permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
                         }) {
-                            Text("Allow", color = DermaGreen, fontWeight = FontWeight.Bold)
+                            Text(if (locationPermanentlyDenied) "Open Settings" else "Allow", color = DermaGreen, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -605,11 +635,15 @@ fun ClinicLocatorScreen(navController: NavController) {
                     } else if (!isLoading && locationUnavailable) {
                         item {
                             OfflineClinicsState(
-                                onRetry = { retryTrigger++ },
+                                onRetry = { if (locationPermanentlyDenied) openAppSettings() else retryTrigger++ },
                                 onBackToHome = { navController.popBackStack() },
                                 icon = Icons.Default.LocationOff,
                                 title = "Couldn't Determine Your Location",
-                                message = "Make sure location services (GPS) are turned on for your device, then retry. This isn't the same as camera or app permissions -- it's a separate system setting."
+                                message = if (locationPermanentlyDenied)
+                                    "Location access was denied and can no longer be requested from within the app. Enable it from Settings to find clinics near you."
+                                else
+                                    "Make sure location services (GPS) are turned on for your device, then retry. This isn't the same as camera or app permissions -- it's a separate system setting.",
+                                retryLabel = if (locationPermanentlyDenied) "Open Settings" else "Retry"
                             )
                         }
                     } else if (!isLoading && clinics.isEmpty()) {
@@ -634,11 +668,15 @@ fun ClinicLocatorScreen(navController: NavController) {
                     } else if (!isLoading && locationUnavailable) {
                         item {
                             OfflineClinicsState(
-                                onRetry = { retryTrigger++ },
+                                onRetry = { if (locationPermanentlyDenied) openAppSettings() else retryTrigger++ },
                                 onBackToHome = { navController.popBackStack() },
                                 icon = Icons.Default.LocationOff,
                                 title = "Couldn't Determine Your Location",
-                                message = "Make sure location services (GPS) are turned on for your device, then retry. This isn't the same as camera or app permissions -- it's a separate system setting."
+                                message = if (locationPermanentlyDenied)
+                                    "Location access was denied and can no longer be requested from within the app. Enable it from Settings to find clinics near you."
+                                else
+                                    "Make sure location services (GPS) are turned on for your device, then retry. This isn't the same as camera or app permissions -- it's a separate system setting.",
+                                retryLabel = if (locationPermanentlyDenied) "Open Settings" else "Retry"
                             )
                         }
                     } else if (!isLoading && clinics.isEmpty()) {
@@ -694,7 +732,8 @@ fun OfflineClinicsState(
     onBackToHome: () -> Unit,
     icon: androidx.compose.ui.graphics.vector.ImageVector = Icons.Default.WifiOff,
     title: String = "No Internet Connection",
-    message: String = "The clinic locator requires an internet connection to find nearby dermatology clinics and get real-time information."
+    message: String = "The clinic locator requires an internet connection to find nearby dermatology clinics and get real-time information.",
+    retryLabel: String = "Retry"
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -725,7 +764,7 @@ fun OfflineClinicsState(
                 colors = ButtonDefaults.buttonColors(containerColor = DermaGreen),
                 shape = RoundedCornerShape(10.dp)
             ) {
-                Text("Retry")
+                Text(retryLabel)
             }
             Spacer(modifier = Modifier.height(8.dp))
             TextButton(onClick = onBackToHome) {
