@@ -117,6 +117,11 @@ private fun LesionSchematicIcon(type: LesionIconType, modifier: Modifier = Modif
 fun FamilyTreeScreen(navController: NavController, condition: String) {
     val settings = LocalAppSettings.current
     val tree = familyTrees[condition]
+    // Same accent color Scan Result and Progress Tracker already use for this exact condition
+    // (mockDetectionResults is the shared source of truth for it) -- previously this screen used
+    // a fixed generic blue/purple regardless of which condition brought you here, breaking the
+    // color-coding thread that ties the rest of the app together.
+    val conditionColor = mockDetectionResults.find { it.condition == condition }?.color ?: DermaGreen
 
     Scaffold(
         topBar = {
@@ -148,7 +153,7 @@ fun FamilyTreeScreen(navController: NavController, condition: String) {
             contentPadding = PaddingValues(16.dp)
         ) {
             item {
-                ResultCard(icon = Icons.Default.Info, iconBg = Color(0xFFEFF6FF), iconTint = Color(0xFF2563EB), title = "Why these are grouped together") {
+                ResultCard(icon = Icons.Default.Info, iconBg = conditionColor.copy(alpha = 0.1f), iconTint = conditionColor, title = "Why these are grouped together") {
                     Text(tree.groupingNote, fontSize = settings.textMd.sp, color = Color(0xFF374151), lineHeight = 22.sp)
                 }
                 Spacer(modifier = Modifier.height(4.dp))
@@ -166,7 +171,7 @@ fun FamilyTreeScreen(navController: NavController, condition: String) {
                     // A simple branch indicator -- a dot and a short stem -- gives the "tree" a
                     // visual identity without needing a full custom-drawn diagram.
                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(24.dp).padding(top = 18.dp)) {
-                        Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(DermaGreen))
+                        Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(conditionColor))
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Card(
