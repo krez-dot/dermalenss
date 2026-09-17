@@ -310,13 +310,18 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null, sca
         AlertDialog(
             onDismissRequest = { showLowConfidenceDialog = false },
             icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFF6B7280)) },
-            title = { Text("Low Confidence", fontWeight = FontWeight.Bold) },
+            title = { Text(if (result.condition == "Image Too Unclear to Analyze") "Image Too Unclear" else "Low Confidence", fontWeight = FontWeight.Bold) },
             text = {
                 Text(
-                    "The scan didn't clearly match any condition this app recognizes. This can happen if the " +
-                        "photo isn't of skin, is blurry or poorly lit, or doesn't clearly show an affected area. " +
-                        "For the most reliable result, retake the photo in good lighting with the affected area " +
-                        "filling the frame.",
+                    if (result.condition == "Image Too Unclear to Analyze")
+                        "This photo doesn't have enough visible detail to analyze -- it may be too dark, out of " +
+                            "focus, or the lens may have been obstructed. Retake in bright, even lighting with a " +
+                            "clean, unobstructed lens."
+                    else
+                        "The scan didn't clearly match any condition this app recognizes. This can happen if the " +
+                            "photo isn't of skin, is blurry or poorly lit, or doesn't clearly show an affected area. " +
+                            "For the most reliable result, retake the photo in good lighting with the affected area " +
+                            "filling the frame.",
                     fontSize = settings.textMd.sp
                 )
             },

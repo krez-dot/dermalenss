@@ -42,10 +42,16 @@ private val conditionTemplates: Map<String, DetectionResult> by lazy {
  * the verdict gate while every one of its boxes got filtered out separately, so the app would name
  * a condition and draw nothing. Keep them unified when this gets filled back in.
  */
-// Real value from this model's own BoxF1_curve.png ("all classes 0.63 at 0.247") -- this run
+// Base value from this model's own BoxF1_curve.png ("all classes 0.63 at 0.247") -- this run
 // completed naturally (patience=25 fired at epoch 49), unlike v1's KeyboardInterrupt, so a real
-// curve exists this time instead of a guessed placeholder.
-private const val CONFIDENCE_THRESHOLD = 0.247f
+// curve exists this time instead of a guessed placeholder. Manually raised to 0.30 afterward: live
+// testing (2026-09-17) found non-skin textured surfaces (a woven fabric close-up) scoring just
+// above 0.247 -- e.g. 26.9% for Eczema -- confidently enough to clear the original floor despite
+// not being skin at all. 0.30 is a deliberate, blunt trade-off away from the F1-optimal point:
+// every genuine skin result observed live this session scored well above 30%, so this hasn't
+// rejected a real case yet, but it's not derived from the curve the way 0.247 was -- re-evaluate
+// if a legitimately low-confidence-but-correct result starts getting rejected.
+private const val CONFIDENCE_THRESHOLD = 0.30f
 
 private const val MIN_CONFIDENCE_PERCENT = CONFIDENCE_THRESHOLD * 100f
 
@@ -71,6 +77,57 @@ private fun lowConfidenceResult(confidencePercent: Float) = DetectionResult(
 )
 
 /**
+ * Live-tested finding (2026-09-17): a near-black/blank frame (lens obstruction, deep shadow,
+ * failed exposure) confidently scored 72-89% for Tinea, well above the F1-derived confidence
+ * floor -- the threshold alone doesn't catch this, since the model has no real concept of "not
+ * enough information here," only "which class scored highest among the six it knows." Shown
+ * instead of running the model at all when there's nowhere near enough visual detail to trust
+ * any result it would produce.
+ */
+private fun insufficientDetailResult() = DetectionResult(
+    condition = "Image Too Unclear to Analyze",
+    confidence = 0f,
+    severity = "Unclear",
+    description = "This photo doesn't have enough visible detail to analyze reliably -- it may be too dark, out of focus, or the lens may have been obstructed.",
+    symptoms = listOf(
+        "Retake in bright, even lighting",
+        "Make sure the lens is clean and unobstructed",
+        "Hold the camera steady so the shot isn't blurry"
+    ),
+    recommendation = "If you have visible skin concerns, consult a dermatologist for an accurate diagnosis.",
+    color = Color(0xFF6B7280),
+    isLowConfidence = true
+)
+
+// A near-blank/underexposed photo has almost no local contrast anywhere in the frame -- real
+// skin, even very dark skin under decent lighting, always has *some* texture (pores, hair,
+// blemishes, lighting falloff). Checking the standard deviation of luminance rather than raw
+// brightness deliberately avoids conflating "dark image" with "dark skin tone": a well-lit photo
+// of deeply pigmented skin has plenty of local variance, same as a well-lit photo of light skin --
+// only a genuinely featureless capture (lens covered, extreme underexposure) scores low here
+// regardless of mean brightness. This is a coarse, deliberately conservative filter for that one
+// specific failure mode, not a general "is this skin" classifier -- it won't catch e.g. a
+// non-skin photo that has real texture (see the fabric-texture false positives from the same
+// test batch), which would need actual negative training examples to fix properly.
+private const val MIN_LUMINANCE_STD_DEV = 10.0
+
+private fun hasEnoughDetail(bitmap: Bitmap): Boolean {
+    val sampleSize = 64 // coarse on purpose -- detecting "basically featureless", not measuring
+    // texture precisely, and a coarse sample is less sensitive to JPEG noise being mistaken for
+    // real detail than sampling every pixel of a full-resolution decode would be.
+    val sampled = Bitmap.createScaledBitmap(bitmap, sampleSize, sampleSize, true)
+    val pixels = IntArray(sampleSize * sampleSize)
+    sampled.getPixels(pixels, 0, sampleSize, 0, 0, sampleSize, sampleSize)
+    val luminances = DoubleArray(pixels.size) { i ->
+        val p = pixels[i]
+        0.299 * ((p shr 16) and 0xFF) + 0.587 * ((p shr 8) and 0xFF) + 0.114 * (p and 0xFF)
+    }
+    val mean = luminances.average()
+    val variance = luminances.sumOf { (it - mean) * (it - mean) } / luminances.size
+    return kotlin.math.sqrt(variance) >= MIN_LUMINANCE_STD_DEV
+}
+
+/**
  * Runs on-device YOLOv11 inference on [imageUri]. Returns null if no model is bundled yet,
  * the image can't be read, or inference fails for any reason -- callers should fall back to
  * mockDetectionResults.random() in that case. Call this off the main thread.
@@ -86,6 +143,10 @@ fun runYoloInference(context: Context, imageUri: String): DetectionResult? {
         val tModelEnd = System.currentTimeMillis()
         val bitmap = loadBitmap(context, imageUri) ?: return null
         val tBitmapEnd = System.currentTimeMillis()
+
+        if (!hasEnoughDetail(bitmap)) {
+            return insufficientDetailResult()
+        }
 
         Interpreter(modelBuffer).use { interpreter ->
             // Input size and layout are read from the model itself rather than assumed, since
