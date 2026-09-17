@@ -1,8 +1,8 @@
 # DermaLens — Developer Handoff
 
-Last updated: 2026-09-10
-Branch: `master` (all work committed and pushed, working tree clean)
-Status: Firebase Auth live. **Multi-class merge is done** — a real 6-class YOLOv11 model (overall mAP50 0.557) is trained, bundled, and live-verified on-device. Contribute to Research now actually uploads to Google Drive. Clinic Locator moved from OSM/Overpass to Google Maps + Places.
+Last updated: 2026-09-16
+Branch: `master`
+Status: Firebase Auth live. **Multi-class merge is done (v2)** — a real 6-class YOLOv11 model (overall mAP50 0.654) is trained, bundled, and live-verified on-device, including confirming that the specific cross-condition misfire from the v1 attempt (a real acne photo scored as Scabies) is fixed. Contribute to Research now actually uploads to Google Drive. Clinic Locator moved from OSM/Overpass to Google Maps + Places.
 
 ---
 
@@ -28,44 +28,44 @@ Status: Firebase Auth live. **Multi-class merge is done** — a real 6-class YOL
 
 ---
 
-## YOLOv11 — 6-Class Merged Model, Trained and Bundled
+## YOLOv11 — 6-Class Merged Model (v2), Trained and Bundled
 
-**The swap-one-at-a-time workflow is over.** `app/src/main/assets/best.tflite` (gitignored) is now the real 6-class merged model, and `CLASS_LABELS` in `ml/YoloDetector.kt` is `listOf("Acne Vulgaris", "Eczema", "Melasma", "Tinea", "Warts", "Scabies")` — order matches the training notebook's `CONDITIONS` list exactly, which is what the class indices were trained against. Changing the order without retraining silently mislabels everything.
+**The swap-one-at-a-time workflow is over.** `app/src/main/assets/best.tflite` (gitignored) is now the real 6-class merged model, and `CLASS_LABELS` in `ml/YoloDetector.kt` is `listOf("Acne Vulgaris", "Eczema", "Melasma", "Tinea", "Warts", "Scabies")` — order matches `training/merge_and_train_multiclass.ipynb`'s `CONDITIONS` list exactly, which is what the class indices were trained against. Changing the order without retraining silently mislabels everything.
 
-### Per-class results (overall mAP50 0.557)
+This is the **second** merge attempt (`RUN_NAME = "multiclass_merged_v2"`). The first (v1, interrupted at epoch 79/250) scored an overall mAP50 of 0.628 but regressed on *every single class* versus its own solo model, and live-testing surfaced a real cross-condition misfire — a genuine acne photo scored as Scabies at 52.3%. v2 fixed that.
 
-| Condition | AP50 | Note |
-|---|---|---|
-| Eczema | 0.643 | Cleaned-up dataset (`eczema-fixed`) — see below |
-| Warts | 0.641 | |
-| Melasma | 0.602 | Small dataset (255 source images) but well-annotated; `yolo11m` solo run hit 0.696 on the same data — capacity was the bottleneck here, not quality |
-| Acne Vulgaris | 0.557 | Real, repeatable confusion with Melasma on clean photos — post-inflammatory hyperpigmentation from healed acne genuinely resembles melasma's brown patches |
-| Tinea | 0.525 | Never annotation-audited yet |
-| **Scabies** | **0.360** | Weakest by a wide margin — see below |
+### Per-class results (overall mAP50 0.654, up from v1's 0.628)
 
-### The confidence floor is now derived, not guessed
-`MIN_CONFIDENCE_PERCENT = 32f` in `YoloDetector.kt`, taken from the trained model's own `BoxF1_curve.png` (F1 peaks at 0.55 at confidence 0.322) — not the old arbitrary 40%. Re-derive this from the new run's F1 curve any time the model is retrained; the optimal point shifts with it.
+| Condition | v2 AP50 | v1 AP50 | Solo baseline |
+|---|---|---|---|
+| Tinea | 0.828 | 0.742 | ~0.86–0.90 (near parity) |
+| Scabies | 0.698 | 0.684 | 0.701 (near parity) |
+| Eczema | 0.674 | 0.649 | 0.735 |
+| Warts | 0.658 | 0.641 | ~0.6+ (at/above parity) |
+| Melasma | 0.569 | 0.569 | 0.696 — **didn't move at all**, see below |
+| Acne Vulgaris | 0.499 | 0.481 | 0.536 |
 
-### Scabies is a genuine annotation-quality problem, diagnosed and quantified
-The confusion matrix showed Scabies isn't confused with other conditions at all — it's simply **missed** (62% predicted as background). Rendering the actual training boxes found the cause: **34% of source images (114 of 334) have a single whole-image box covering 90-100% of the frame** over photos that visibly contain 6-15 discrete lesions, contradicting the other 66% that are correctly boxed per-lesion (tight, 2-5% of image area each). The model can't learn a coherent "what does one lesion look like" concept from two contradictory lessons at once. The full list of 114 affected image numbers (worst-first) is not yet committed anywhere — ask Mark Joseph if picking this up, or re-derive it by downloading `scabies-erb5y` and measuring box-area-as-%-of-image per file. Re-annotating these is the single highest-leverage remaining improvement.
+### What actually fixed v1's cross-condition confusion: instance-aware oversampling
+v1's `labels.jpg` plot showed Acne averaging ~12 boxes/image vs. Tinea/Melasma's ~1/image — so even with the existing *image*-count oversampling (capped at 1000 images/class), Acne still dominated actual gradient updates by raw box-instance count (20,528 vs. Tinea's 1,736 in v1, an 11x gap). That tracked closely with which classes regressed most in v1's validation. v2 adds a second balancing pass (step 5c in the notebook) that counts real box instances per condition and tops up any class still short of a target (median of the non-largest classes, clamped 3000-6000) — on top of, not instead of, the image-level pass. Confirmed via v2's confusion matrix: cross-condition confusion between real classes now tops out at 0.09 (was the dominant failure mode in v1); the remaining weakness is missed detections (predicted background), not wrong-condition guesses.
 
-### Two dataset preprocessing bugs found and fixed (relevant for any future dataset swap)
-Melasma (`dermalens-yolov11`) and Scabies (`scabies-erb5y`) were both exported from Roboflow with **"Fit within" (letterbox) resize** while every other condition used **"Stretch to"** — mismatched geometry between classes in one merged dataset, and it's silent unless you check each dataset version's preprocessing settings via the Roboflow API before training. Fixing both moved Scabies 0.297 → 0.360 and Melasma 0.572 → 0.602 in isolation, before the annotation-quality issue above was even found.
+### Melasma is the one open problem
+Unchanged at 0.569 AP50 between v1 and v2, despite the instance-balancing fix targeting exactly this kind of underrepresented class — still meaningfully behind its 0.696 solo result. Not yet diagnosed why the fix didn't move it (dataset size, target instance count too low for it specifically, or something else). Still classifies correctly in live testing (71.8% on a real photo), just not as strong as it could be. Worth another look before considering the merge fully done.
 
-### Model capacity is a real, measured lever — not yet applied to the full merge
-A solo `yolo11m` (medium) run on Melasma's exact same data scored **0.696 mAP50** vs. 0.602 for `yolo11s` on identical data, and was live-verified correctly identifying a real photo. The full 6-class merge hasn't been retrained on `yolo11m` yet — that's an open next step, and it's unknown whether the capacity boost helps the other 5 classes as much as it helped Melasma.
+### A new Acne dataset was tried and ruled out (not a dataset-quality problem)
+A newer, more heavily-augmented Acne dataset (`acne-fixed-hzi22` v1 — cleaner audit than the current one: no stray classes, no whole-image boxes, no watermarks, no leakage) was solo-tested via `retrain_yolo.ipynb` and scored mAP50=0.534 — statistically identical to the current dataset's 0.536. This suggests Acne's ~0.5 ceiling is closer to an inherent-difficulty limit (small, numerous, fuzzy-bordered lesions) than a fixable data-quality issue. Credentials for both are in memory (`project_proven_datasets.md`) if this gets revisited.
+
+### The confidence threshold is derived from this model's own F1 curve
+`CONFIDENCE_THRESHOLD = 0.247f` in `YoloDetector.kt`, taken directly from this run's `BoxF1_curve.png` ("all classes 0.63 at 0.247"). It drives both the per-box candidate filter and the "is the verdict good enough to show" gate — deliberately unified, not two separate constants (see the code comment). Re-derive this any time the model is retrained.
 
 ### Acne subtype differentiation — tried, not ready, documented for later
 A standalone 5-class model (blackhead/whitehead/papula/pustula/nodules, sourced by splitting one multi-class Roboflow project via `source_class` in the merge notebook) scored only **0.234 mAP50**, with blackhead — despite having by far the most training data (2,588 of ~3,457 instances) — sitting at **1.5% recall**. That's not a data-volume problem; blackheads are small, numerous, low-contrast dots, which is a genuinely hard small-object-detection case distinct from a single larger lesion. Papula alone scored a usable 0.481, proving the concept can work for some subtypes. Full writeup and the exact dataset details: `training/acne_subtypes_future/README.md`. Not folded into the bundled model.
 
-### Real bugs found and fixed along the way (all committed, all live-tested)
-- **No confidence floor existed** (fixed long before this pass, still relevant context): a model has no way to say "not skin" without one — see `MIN_CONFIDENCE_PERCENT` above for the current, derived value.
+### Real bugs found and fixed along the way (all live-tested)
+- **`resume=True` silently resuming a stale/mismatched checkpoint** — a class-count safety check now refuses to resume onto a checkpoint whose `len(model.names)` doesn't match the current `CONDITIONS` list.
+- **`resume=True` also silently reuses the *original* run's saved hyperparameters**, ignoring newly-passed `epochs`/`patience` — this is what let v1 train to 250 epochs/patience 40 even after the config was corrected to 150/25. Fixed by giving every genuinely fresh attempt its own `RUN_NAME` rather than trying to resume in place.
 - **Severity badge was fabricated on the result screen** — removed from that display; `DetectionResult.severity` is still real and used by Progress Tracker's trend feature.
 - **Channels-first vs. channels-last auto-detection**, and **stretch-resize (not letterboxed) preprocessing** — `YoloDetector.kt`'s `preprocess()` and `bestClass()` handle both automatically; see the code comments there.
 - **Don't over-zoom when scanning** — cropping tightly onto a single lesion measurably *lowered* confidence on the same photo (28.6% → 17.4%), because the training images are framed with the lesion in surrounding skin context, not filling the frame edge to edge. Worth surfacing as in-app guidance if not already (check `HomeScreen.kt`'s "Tip of the Day" rotation).
-
-### Confidence threshold (`BOX_CONFIDENCE_THRESHOLD = 0.25`, box-drawing only, doesn't affect the % shown)
-Unchanged since the original experiment — see `THRESHOLD_EXPERIMENT.md` for full methodology. Still 0.25.
 
 ---
 

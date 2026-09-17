@@ -17,14 +17,18 @@ import java.nio.channels.FileChannel
 
 private const val MODEL_FILE_NAME = "best.tflite"
 
-// RESET (fresh training start, 2026-09-11): no model is currently bundled -- app/src/main/assets/
-// best.tflite was removed along with all local training run data, to redo data verification and
-// training from scratch. loadModelFile() returns null when the asset is missing, and
-// runYoloInference() returns null immediately after that (before CLASS_LABELS is ever read), so an
-// empty list here is safe -- but fill this back in with the real class order the next model was
-// trained against (matching the training notebook's CONDITIONS list exactly) once one exists,
-// or every result will be silently mislabeled.
-private val CLASS_LABELS = emptyList<String>()
+// Second 6-class merge attempt (v2, completed naturally at epoch 49/150 via patience=25,
+// 2026-09-15) -- instance-aware oversampling (5c in merge_and_train_multiclass.ipynb) added on
+// top of the existing image-level balancing, after the v1 attempt's labels.jpg showed Acne at
+// ~12 boxes/image vs Tinea/Melasma's ~1/image. Real improvement over v1 on every class but one:
+// Acne 0.499 (v1 0.481, solo 0.536), Eczema 0.674 (v1 0.649, solo 0.735), Melasma 0.569 (v1
+// 0.569, unchanged -- the one class the fix didn't move), Tinea 0.828 (v1 0.742, solo ~0.86-0.90
+// -- now close to parity), Warts 0.658 (v1 0.641, solo ~0.6+ -- now roughly at parity), Scabies
+// 0.698 (v1 0.684, solo 0.701 -- now roughly at parity). Overall mAP50=0.654 (v1 0.628).
+// Confusion matrix shows the v1 cross-condition misfires (e.g. Acne read as Scabies) are largely
+// gone -- off-diagonal confusion between real conditions tops out at 0.09; the dominant failure
+// mode now is missed detections, not wrong-condition guesses. Order matches training order.
+private val CLASS_LABELS = listOf("Acne Vulgaris", "Eczema", "Melasma", "Tinea", "Warts", "Scabies")
 
 private val conditionTemplates: Map<String, DetectionResult> by lazy {
     mockDetectionResults.associateBy { it.condition }
@@ -33,17 +37,15 @@ private val conditionTemplates: Map<String, DetectionResult> by lazy {
 /**
  * The one confidence floor for this model, taken from its own F1-Confidence curve.
  *
- * RESET (fresh training start, 2026-09-11): no model is bundled right now, so this placeholder
- * value means nothing yet -- do not carry over a number from a deleted model. Once a new model is
- * trained, read its own BoxF1_curve.png ("all classes X at Y") and set this to Y. Every model needs
- * its own check here; the right floor is not a fixed constant across different models or datasets.
- *
  * This deliberately drives BOTH the per-box candidate filter and the "is the verdict good enough
  * to show" gate, on purpose -- keeping those as two separate constants previously let a scan clear
  * the verdict gate while every one of its boxes got filtered out separately, so the app would name
  * a condition and draw nothing. Keep them unified when this gets filled back in.
  */
-private const val CONFIDENCE_THRESHOLD = 0.25f // placeholder only -- re-derive from the next model's own F1 curve
+// Real value from this model's own BoxF1_curve.png ("all classes 0.63 at 0.247") -- this run
+// completed naturally (patience=25 fired at epoch 49), unlike v1's KeyboardInterrupt, so a real
+// curve exists this time instead of a guessed placeholder.
+private const val CONFIDENCE_THRESHOLD = 0.247f
 
 private const val MIN_CONFIDENCE_PERCENT = CONFIDENCE_THRESHOLD * 100f
 
@@ -63,7 +65,7 @@ private fun lowConfidenceResult(confidencePercent: Float) = DetectionResult(
         "Make sure the affected skin fills the guide frame",
         "Hold the camera steady and in focus"
     ),
-    recommendation = "If you have visible skin concerns, consult a licensed dermatologist for an accurate diagnosis.",
+    recommendation = "If you have visible skin concerns, consult a dermatologist for an accurate diagnosis.",
     color = Color(0xFF6B7280),
     isLowConfidence = true
 )
@@ -74,9 +76,16 @@ private fun lowConfidenceResult(confidencePercent: Float) = DetectionResult(
  * mockDetectionResults.random() in that case. Call this off the main thread.
  */
 fun runYoloInference(context: Context, imageUri: String): DetectionResult? {
+    // Temporary perf-testing instrumentation (2026-09-16) -- wall-clock timings for each stage,
+    // logged under the "DermaLensPerf" tag so they're easy to grep out of logcat separately from
+    // the regular "DermaLens" detection logs. Remove once performance testing is done.
+    val tTotalStart = System.currentTimeMillis()
     return try {
+        val tModelStart = System.currentTimeMillis()
         val modelBuffer = loadModelFile(context) ?: return null
+        val tModelEnd = System.currentTimeMillis()
         val bitmap = loadBitmap(context, imageUri) ?: return null
+        val tBitmapEnd = System.currentTimeMillis()
 
         Interpreter(modelBuffer).use { interpreter ->
             // Input size and layout are read from the model itself rather than assumed, since
@@ -92,11 +101,20 @@ fun runYoloInference(context: Context, imageUri: String): DetectionResult? {
             val outputShape = interpreter.getOutputTensor(0).shape()
             Log.d("DermaLens", "YOLO input=${inputShape.toList()} (channelsFirst=$inputChannelsFirst) output=${outputShape.toList()}")
 
+            val tPreprocessStart = System.currentTimeMillis()
             val inputBuffer = preprocess(bitmap, inputWidth, inputHeight, inputChannelsFirst)
             val outputSize = outputShape.fold(1) { acc, d -> acc * d }
             val outputBuffer = ByteBuffer.allocateDirect(outputSize * 4).order(ByteOrder.nativeOrder())
+            val tPreprocessEnd = System.currentTimeMillis()
 
             interpreter.run(inputBuffer, outputBuffer)
+            val tInferenceEnd = System.currentTimeMillis()
+            Log.d(
+                "DermaLensPerf",
+                "modelLoad=${tModelEnd - tModelStart}ms bitmapLoad=${tBitmapEnd - tModelEnd}ms " +
+                    "preprocess=${tPreprocessEnd - tPreprocessStart}ms inference=${tInferenceEnd - tPreprocessEnd}ms " +
+                    "totalSoFar=${tInferenceEnd - tTotalStart}ms"
+            )
 
             outputBuffer.rewind()
             val values = FloatArray(outputSize)
@@ -106,6 +124,7 @@ fun runYoloInference(context: Context, imageUri: String): DetectionResult? {
                 bestClass(values, outputShape, inputWidth, inputHeight) ?: return null
             val confidencePercent = (confidence * 100f).coerceIn(0f, 100f)
             Log.d("DermaLens", "YOLO result classIndex=$classIndex confidence=$confidence boxes=$boxes")
+            Log.d("DermaLensPerf", "totalPipeline=${System.currentTimeMillis() - tTotalStart}ms (includes NMS/postprocess)")
             if (confidencePercent < MIN_CONFIDENCE_PERCENT) {
                 return lowConfidenceResult(confidencePercent)
             }
@@ -152,7 +171,7 @@ fun analysisFailedResult() = DetectionResult(
         "Try closing and reopening the app",
         "If it keeps happening, report it with the date and time of the scan"
     ),
-    recommendation = "No result was produced, so nothing here should be read as a diagnosis. For any skin concern you're worried about, consult a licensed dermatologist.",
+    recommendation = "No result was produced, so nothing here should be read as a diagnosis. For any skin concern you're worried about, consult a dermatologist.",
     color = Color(0xFF6B7280),
     isLowConfidence = true
 )

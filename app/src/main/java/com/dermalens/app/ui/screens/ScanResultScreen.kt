@@ -95,6 +95,64 @@ val mockDetectionResults = listOf(
     DetectionResult("Scabies", 88.4f, "Severe", "Scabies is an itchy skin condition caused by a tiny burrowing mite. The intense itching associated with scabies is an allergic reaction to the mite.", listOf("Intense itching", "Thin burrow tracks", "Rash", "Sores"), "Seek immediate medical attention. Treatment requires prescription medication. Wash all clothing and bedding.", Color(0xFFF44336), distinguishingFeature = "Intense itching that's worse at night, with thin thread-like burrow tracks, often between fingers or on wrists.")
 )
 
+/**
+ * Inserts or updates this scan's history row. Shared by both the "Save to History" and
+ * "Contribute to Research" buttons so a user who taps both ends up with one row, not two --
+ * passing back the previous call's returned id makes the second insert an update (Room's
+ * REPLACE conflict strategy) rather than a duplicate. [contribute] controls only whether the
+ * image gets copied out and the row flagged for upload; it never happens as a side effect of
+ * plain saving.
+ */
+private suspend fun saveScan(
+    context: android.content.Context,
+    result: DetectionResult,
+    imageUri: String?,
+    existingScanId: Int?,
+    contribute: Boolean
+): Int? {
+    val db = DermaDatabase.getDatabase(context)
+    val prefs = context.getSharedPreferences(DermaPrefs.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    val savedEmail = prefs.getString(DermaPrefs.KEY_USER_EMAIL, "") ?: ""
+    var user = db.userDao().getUserByEmail(savedEmail)
+    if (user == null && savedEmail.isNotBlank()) {
+        // No local profile row for this logged-in session (e.g. it was lost to a schema
+        // migration) -- self-heal the same way Login's sign-in flow does, so saving a scan
+        // doesn't silently no-op.
+        db.userDao().insertUser(User(fullName = savedEmail.substringBefore("@"), email = savedEmail, passwordHash = ""))
+        user = db.userDao().getUserByEmail(savedEmail)
+    }
+    if (user == null) return existingScanId
+
+    var savedImagePath = ""
+    if (contribute && imageUri != null) {
+        savedImagePath = withContext(Dispatchers.IO) {
+            try {
+                val dir = java.io.File(context.filesDir, "contributed_scans")
+                dir.mkdirs()
+                val file = java.io.File(dir, "${System.currentTimeMillis()}.jpg")
+                context.contentResolver.openInputStream(android.net.Uri.parse(imageUri))?.use { input ->
+                    file.outputStream().use { output -> input.copyTo(output) }
+                }
+                file.absolutePath
+            } catch (e: Exception) { "" }
+        }
+    }
+
+    val id = db.scanRecordDao().insertScan(
+        ScanRecord(
+            id = existingScanId ?: 0,
+            userId = user.userId,
+            condition = result.condition,
+            confidence = result.confidence,
+            severity = result.severity,
+            notes = "Scanned on ${java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()).format(java.util.Date())}",
+            imagePath = savedImagePath,
+            contributedForTraining = contribute && savedImagePath.isNotEmpty()
+        )
+    )
+    return id.toInt()
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScanResultScreen(navController: NavController, imageUri: String? = null) {
@@ -130,6 +188,29 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null) {
     }
     val result = loadedResult!!
     var isSaved by remember { mutableStateOf(false) }
+    var isContributed by remember { mutableStateOf(false) }
+    // Reused across Save to History and Contribute to Research so a user who taps both ends up
+    // with one updated row, not two -- Room's REPLACE conflict strategy overwrites by id.
+    var savedScanId by remember { mutableStateOf<Int?>(null) }
+    // Read once, at composable entry, purely to decide whether the Contribute button shows at
+    // all -- someone who opted out entirely in Profile shouldn't see a per-scan prompt for a
+    // feature they've already declined.
+    val contributionFeatureEnabled = remember {
+        context.getSharedPreferences(DermaPrefs.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+            .getBoolean(DermaPrefs.KEY_CONTRIBUTE_DATA, false)
+    }
+    // Shown once, the first time a low-confidence result loads -- the inline "No Clear Condition
+    // Detected" card below still renders underneath, so dismissing the dialog (rather than
+    // retaking) still leaves the user somewhere useful instead of a dead end.
+    var showLowConfidenceDialog by remember { mutableStateOf(result.isLowConfidence) }
+    // Set true only when Save to History actually also triggered a research upload (contribute
+    // toggle on + image copy succeeded) -- not on every save, since most saves don't contribute.
+    var showContributionDialog by remember { mutableStateOf(false) }
+    // The actual consent moment -- shown right after a successful save, only if the Contribute
+    // to Research feature is enabled in Profile. A real yes/no choice, not a one-button prompt:
+    // this feature is anonymous and opt-in per the app's own Privacy Policy text, so the user
+    // has to be able to genuinely say no.
+    var showContributePrompt by remember { mutableStateOf(false) }
     // Matches the image's real aspect ratio once loaded so the overlay box (normalized 0..1 to
     // the image itself) lines up pixel-for-pixel with no letterbox offset to account for.
     var imageAspectRatio by remember(imageUri) { mutableStateOf(1f) }
@@ -140,6 +221,81 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null) {
     // every recomposition.
     var revealed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { revealed = true }
+
+    if (showContributePrompt) {
+        AlertDialog(
+            onDismissRequest = { showContributePrompt = false },
+            icon = { Icon(Icons.Default.CloudUpload, contentDescription = null, tint = DermaGreen) },
+            title = { Text("Contribute to Research?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "Would you like to also contribute this scan to help improve future versions " +
+                        "of the detection model? The image is uploaded anonymously -- no name, " +
+                        "email, or account info is attached, only the image and its detected " +
+                        "condition.",
+                    fontSize = settings.textMd.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showContributePrompt = false
+                    scope.launch {
+                        savedScanId = saveScan(context, result, imageUri, savedScanId, contribute = true)
+                        isContributed = true
+                        com.dermalens.app.worker.ContributionUploadScheduler.triggerImmediateUpload(context)
+                        showContributionDialog = true
+                    }
+                }) { Text("Yes, contribute") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showContributePrompt = false }) { Text("No thanks") }
+            }
+        )
+    }
+
+    if (showContributionDialog) {
+        AlertDialog(
+            onDismissRequest = { showContributionDialog = false },
+            icon = { Icon(Icons.Default.CloudUpload, contentDescription = null, tint = DermaGreen) },
+            title = { Text("Thank You!", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "This image has been uploaded to our secure cloud storage. Thank you for " +
+                        "contributing to research! 😊",
+                    fontSize = settings.textMd.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showContributionDialog = false }) { Text("OK") }
+            }
+        )
+    }
+
+    if (showLowConfidenceDialog) {
+        AlertDialog(
+            onDismissRequest = { showLowConfidenceDialog = false },
+            icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFF6B7280)) },
+            title = { Text("Low Confidence", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "The scan didn't clearly match any condition this app recognizes. This can happen if the " +
+                        "photo isn't of skin, is blurry or poorly lit, or doesn't clearly show an affected area. " +
+                        "For the most reliable result, retake the photo in good lighting with the affected area " +
+                        "filling the frame.",
+                    fontSize = settings.textMd.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLowConfidenceDialog = false
+                    navController.navigate(Screen.Scan.route) { popUpTo(Screen.Scan.route) { inclusive = true } }
+                }) { Text("Retake Photo") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLowConfidenceDialog = false }) { Text("View Details") }
+            }
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -270,8 +426,15 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null) {
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Symptoms Card
-                ResultCard(icon = Icons.Default.List, iconBg = Color(0xFFFEF3C7), iconTint = Color(0xFFD97706), title = "Common Symptoms") {
+                // Symptoms Card -- for a low-confidence result, `result.symptoms` actually holds
+                // retake tips (see YoloDetector.kt's lowConfidenceResult), not real symptoms, so
+                // the heading needs to match what's actually listed underneath it.
+                ResultCard(
+                    icon = Icons.Default.List,
+                    iconBg = Color(0xFFFEF3C7),
+                    iconTint = Color(0xFFD97706),
+                    title = if (result.isLowConfidence) "What You Can Try" else "Common Symptoms"
+                ) {
                     result.symptoms.forEach { symptom ->
                         Row(
                             modifier = Modifier.padding(vertical = 4.dp).semantics { contentDescription = "Symptom: $symptom" },
@@ -349,54 +512,14 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null) {
                     onClick = {
                         if (!isSaved) {
                             scope.launch {
-                                val db = DermaDatabase.getDatabase(context)
-                                val prefs = context.getSharedPreferences(DermaPrefs.PREFS_NAME, android.content.Context.MODE_PRIVATE)
-                                val savedEmail = prefs.getString(DermaPrefs.KEY_USER_EMAIL, "") ?: ""
-                                var user = db.userDao().getUserByEmail(savedEmail)
-                                if (user == null && savedEmail.isNotBlank()) {
-                                    // No local profile row for this logged-in session (e.g. it was
-                                    // lost to a schema migration) -- self-heal the same way Login's
-                                    // sign-in flow does, so saving a scan doesn't silently no-op.
-                                    db.userDao().insertUser(
-                                        User(
-                                            fullName = savedEmail.substringBefore("@"),
-                                            email = savedEmail,
-                                            passwordHash = ""
-                                        )
-                                    )
-                                    user = db.userDao().getUserByEmail(savedEmail)
-                                }
-                                if (user != null) {
-                                    val contributeEnabled = prefs.getBoolean(DermaPrefs.KEY_CONTRIBUTE_DATA, false)
-                                    var savedImagePath = ""
-                                    if (contributeEnabled && imageUri != null) {
-                                        savedImagePath = withContext(Dispatchers.IO) {
-                                            try {
-                                                val dir = java.io.File(context.filesDir, "contributed_scans")
-                                                dir.mkdirs()
-                                                val file = java.io.File(dir, "${System.currentTimeMillis()}.jpg")
-                                                context.contentResolver.openInputStream(android.net.Uri.parse(imageUri))?.use { input ->
-                                                    file.outputStream().use { output -> input.copyTo(output) }
-                                                }
-                                                file.absolutePath
-                                            } catch (e: Exception) { "" }
-                                        }
-                                    }
-                                    db.scanRecordDao().insertScan(
-                                        ScanRecord(
-                                            userId = user.userId,
-                                            condition = result.condition,
-                                            confidence = result.confidence,
-                                            severity = result.severity,
-                                            notes = "Scanned on ${java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()).format(java.util.Date())}",
-                                            imagePath = savedImagePath,
-                                            contributedForTraining = contributeEnabled && savedImagePath.isNotEmpty()
-                                        )
-                                    )
-                                    if (contributeEnabled && savedImagePath.isNotEmpty()) {
-                                        com.dermalens.app.worker.ContributionUploadScheduler.triggerImmediateUpload(context)
-                                    }
-                                    isSaved = true
+                                // contribute = false here, deliberately -- saving to history must
+                                // never silently also upload the image. Whether to contribute is
+                                // asked right after, as its own explicit yes/no prompt, so consent
+                                // is real rather than a side effect of tapping this button.
+                                savedScanId = saveScan(context, result, imageUri, savedScanId, contribute = false)
+                                isSaved = true
+                                if (contributionFeatureEnabled && !isContributed) {
+                                    showContributePrompt = true
                                 }
                             }
                         }
