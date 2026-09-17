@@ -284,9 +284,13 @@ fun ClinicLocatorScreen(navController: NavController) {
         }
 
         if (!hasLocationPermission) {
+            // Deliberately not showing clinics near a fallback location anymore -- that made the
+            // "Location access needed" banner above look wrong (real results showing right below
+            // a banner claiming access is needed). Nothing renders until permission is actually
+            // granted, so the banner and the empty results screen agree with each other.
             permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-            locationLabel = "Tarlac City, Tarlac"
-            clinics = fetchNearbyClinics(context, 15.4755, 120.5963)
+            locationLabel = "Location unavailable"
+            clinics = emptyList()
             isLoading = false
         } else {
             val location = suspendCancellableCoroutine<android.location.Location?> { cont ->
