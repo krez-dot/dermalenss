@@ -352,12 +352,19 @@ fun QuickActionCard(icon: ImageVector, label: String, color: Color, modifier: Mo
         colors = CardDefaults.cardColors(containerColor = if (settings.highContrast) Color(0xFFF0F0F0) else Color.White),
         elevation = CardDefaults.cardElevation(if (settings.highContrast) 0.dp else 2.dp)
     ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        // Horizontal padding is deliberately tighter than vertical -- at 3-per-row on narrow
+        // screens there isn't much width to spare, and 16.dp on both sides was enough to force
+        // "Progress" to break mid-word ("Progres"/"s") instead of just wrapping at a space.
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Box(modifier = Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).background(color.copy(alpha = if (settings.highContrast) 0.2f else 0.1f)), contentAlignment = Alignment.Center) {
                 Icon(imageVector = icon, contentDescription = label, tint = color, modifier = Modifier.size(26.dp))
             }
             Spacer(modifier = Modifier.height(10.dp))
-            Text(text = label, fontSize = settings.textBase.sp, fontWeight = FontWeight.SemiBold, color = settings.textPrimary, textAlign = TextAlign.Center)
+            // minLines = 2 reserves the same height for every card's label regardless of whether
+            // it actually wraps -- without this, "Find Clinics" wraps to 2 lines on narrow
+            // screens (or larger accessibility font sizes) while "Scan Skin"/"Progress" stay on
+            // 1, making that one card taller and breaking the row's alignment.
+            Text(text = label, fontSize = settings.textBase.sp, fontWeight = FontWeight.SemiBold, color = settings.textPrimary, textAlign = TextAlign.Center, minLines = 2)
         }
     }
 }
