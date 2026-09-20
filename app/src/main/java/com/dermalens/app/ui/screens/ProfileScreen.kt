@@ -576,6 +576,11 @@ fun EditProfileScreen(navController: NavController) {
     var isSaved by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
     var saveTrigger by remember { mutableStateOf(0) }
+    // Tracks the name actually loaded from the DB so Save can tell "nothing changed" apart from
+    // "changed back to the original value" -- previously Save always ran and showed "Saved!" even
+    // untouched, which read as a fake/confusing success state.
+    var originalName by remember { mutableStateOf<String?>(null) }
+    val hasChanges = originalName != null && (name.trim() != originalName || newPassword.isNotEmpty())
 
     val fieldColors = OutlinedTextFieldDefaults.colors(
         focusedBorderColor = DermaGreen, focusedLabelColor = DermaGreen,
@@ -589,7 +594,7 @@ fun EditProfileScreen(navController: NavController) {
         val prefs = context.getSharedPreferences(DermaPrefs.PREFS_NAME, android.content.Context.MODE_PRIVATE)
         val savedEmail = prefs.getString(DermaPrefs.KEY_USER_EMAIL, "") ?: ""
         val user = db.userDao().getUserByEmail(savedEmail)
-        if (user != null) { name = user.fullName; email = user.email }
+        if (user != null) { name = user.fullName; email = user.email; originalName = user.fullName }
     }
 
     LaunchedEffect(saveTrigger) {
@@ -627,6 +632,7 @@ fun EditProfileScreen(navController: NavController) {
                 currentPassword = ""; newPassword = ""; confirmPassword = ""
             }
             db.userDao().updateProfile(user.userId, trimmedName, user.email)
+            originalName = trimmedName
             isSaved = true
         }
     }
@@ -642,7 +648,10 @@ fun EditProfileScreen(navController: NavController) {
         }
     ) { innerPadding ->
         Column(
-            modifier = Modifier.fillMaxSize().background(if (settings.highContrast) Color.White else Color(0xFFF8F9FA)).padding(innerPadding).verticalScroll(rememberScrollState()).padding(24.dp),
+            // imePadding() is needed because the app runs edge-to-edge (enableEdgeToEdge() in
+            // MainActivity) -- without it, nothing pushes this content above the keyboard and the
+            // lower fields (password inputs, Save button) end up hidden behind it.
+            modifier = Modifier.fillMaxSize().background(if (settings.highContrast) Color.White else Color(0xFFF8F9FA)).padding(innerPadding).verticalScroll(rememberScrollState()).imePadding().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Spacer(modifier = Modifier.height(8.dp))
@@ -692,7 +701,7 @@ fun EditProfileScreen(navController: NavController) {
             }
 
             Spacer(modifier = Modifier.height(20.dp))
-            Button(onClick = { saveTrigger++ }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = if (isSaved) Color(0xFF16A34A) else DermaGreen)) {
+            Button(onClick = { saveTrigger++ }, enabled = hasChanges || isSaved, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = if (isSaved) Color(0xFF16A34A) else DermaGreen)) {
                 Icon(if (isSaved) Icons.Default.Check else Icons.Default.Save, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(if (isSaved) "Saved!" else "Save Changes", fontSize = settings.textLg.sp, fontWeight = FontWeight.SemiBold)
