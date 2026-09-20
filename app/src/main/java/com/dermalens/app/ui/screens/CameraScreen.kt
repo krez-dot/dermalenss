@@ -24,6 +24,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -129,11 +130,18 @@ private fun cropGalleryImageToFrame(
  *
  * Without this the guide box was decorative on the camera path: the gallery path cropped to the
  * frame but `capturePhoto` handed the full-frame JPEG straight to the result screen. The guide
- * box is a 260.dp square on a full-screen preview, so it covers roughly a fifth of the frame's
- * area -- meaning the model was being shown a lesion at about 2.3x smaller linear scale than
- * anything in the training set, which is all lesion-filling crops. That alone is enough to sink
- * confidence on a model that validates fine, and it also made camera and gallery scans of the
- * same skin disagree.
+ * box is a 340.dp square on a full-screen preview, so it covers roughly a third of the frame's
+ * area -- meaning the model was being shown a lesion at a smaller linear scale than anything in
+ * the training set, which is all lesion-filling crops. That alone is enough to sink confidence on
+ * a model that validates fine, and it also made camera and gallery scans of the same skin
+ * disagree.
+ *
+ * Sized at 340.dp (not the original 260.dp) after a live A/B test on one wart photo (2026-09-21):
+ * a tight crop scored 8.0% (below the confidence floor, wrong condition), a moderate crop scored
+ * 55.8% (correct), and the widest, most-context crop scored 76.3% (correct) -- monotonically
+ * better with more surrounding skin in frame, consistent with the over-zoom finding in the
+ * README. 340.dp is a deliberate move toward more context, not a re-derivation of the exact
+ * optimum -- re-test if a case shows the opposite (bigger frame hurting confidence).
  *
  * Assumes the captured image covers the same field of view as the preview, which is what the
  * [ViewPort] set in `startCamera` guarantees -- PreviewView's default FILL_CENTER scale type
@@ -217,7 +225,12 @@ fun ScanScreen(navController: NavController) {
 fun CameraPreviewScreen(navController: NavController) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val prefs = remember { context.getSharedPreferences(DermaPrefs.PREFS_NAME, android.content.Context.MODE_PRIVATE) }
     var isFlashOn by remember { mutableStateOf(false) }
+    // Auto-opens once per camera visit unless the user has previously checked "Don't show
+    // again" -- the info icon still reopens it manually regardless of that preference.
+    var showConditionsInfo by remember { mutableStateOf(!prefs.getBoolean(DermaPrefs.KEY_HIDE_SCAN_CONDITIONS_INFO, false)) }
+    var dontShowConditionsInfoAgain by remember { mutableStateOf(false) }
     var camera by remember { mutableStateOf<Camera?>(null) }
     var isFrontCamera by remember { mutableStateOf(false) }
     var isScanning by remember { mutableStateOf(false) }
@@ -233,7 +246,7 @@ fun CameraPreviewScreen(navController: NavController) {
     var galleryOffsetY by remember { mutableFloatStateOf(0f) }
     var containerSizePx by remember { mutableStateOf(IntSize.Zero) }
     val density = LocalDensity.current
-    val guideBoxSizePx = with(density) { 260.dp.toPx() }
+    val guideBoxSizePx = with(density) { 340.dp.toPx() }
 
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -380,24 +393,78 @@ fun CameraPreviewScreen(navController: NavController) {
                 Text("Position skin within frame", color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp)
             }
 
-            IconButton(
-                onClick = { isFlashOn = !isFlashOn; camera?.cameraControl?.enableTorch(isFlashOn) },
-                modifier = Modifier.size(42.dp).background(
-                    if (isFlashOn) DermaGreen else Color.White.copy(alpha = 0.15f), CircleShape
-                )
-            ) {
-                Icon(
-                    if (isFlashOn) Icons.Default.FlashOn else Icons.Default.FlashOff,
-                    contentDescription = "Flash",
-                    tint = Color.White
-                )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                IconButton(
+                    onClick = { showConditionsInfo = true },
+                    modifier = Modifier.size(42.dp).background(Color.White.copy(alpha = 0.15f), CircleShape)
+                ) {
+                    Icon(Icons.Default.Info, contentDescription = "What can this scan for?", tint = Color.White)
+                }
+
+                IconButton(
+                    onClick = { isFlashOn = !isFlashOn; camera?.cameraControl?.enableTorch(isFlashOn) },
+                    modifier = Modifier.size(42.dp).background(
+                        if (isFlashOn) DermaGreen else Color.White.copy(alpha = 0.15f), CircleShape
+                    )
+                ) {
+                    Icon(
+                        if (isFlashOn) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                        contentDescription = "Flash",
+                        tint = Color.White
+                    )
+                }
             }
+        }
+
+        if (showConditionsInfo) {
+            AlertDialog(
+                onDismissRequest = { showConditionsInfo = false },
+                icon = { Icon(Icons.Default.Info, contentDescription = null, tint = DermaGreen) },
+                title = { Text("What This Scan Can Detect", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        Text(
+                            "DermaLens currently recognizes 6 skin conditions:",
+                            fontSize = 14.sp, color = Color(0xFF374151)
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        listOf("Acne Vulgaris", "Eczema", "Melasma", "Tinea", "Warts", "Scabies").forEach { condition ->
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 3.dp)) {
+                                Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(DermaGreen))
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(condition, fontSize = 14.sp, color = Color(0xFF1a1a1a))
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            "A photo of anything outside these -- another condition, or a non-skin object -- may still return a low-confidence or incorrect result. Always consult a dermatologist for an actual diagnosis.",
+                            fontSize = 12.sp, color = Color(0xFF6B7280), lineHeight = 16.sp
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable { dontShowConditionsInfoAgain = !dontShowConditionsInfoAgain }
+                        ) {
+                            Checkbox(checked = dontShowConditionsInfoAgain, onCheckedChange = { dontShowConditionsInfoAgain = it }, colors = CheckboxDefaults.colors(checkedColor = DermaGreen))
+                            Text("Don't show this again", fontSize = 13.sp, color = Color(0xFF374151))
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showConditionsInfo = false
+                        if (dontShowConditionsInfoAgain) {
+                            prefs.edit().putBoolean(DermaPrefs.KEY_HIDE_SCAN_CONDITIONS_INFO, true).apply()
+                        }
+                    }) { Text("Got it", color = DermaGreen, fontWeight = FontWeight.Bold) }
+                }
+            )
         }
 
         // Scan Frame
         Box(
             modifier = Modifier
-                .size(260.dp)
+                .size(340.dp)
                 .align(Alignment.Center)
                 .clip(RoundedCornerShape(24.dp))
                 .border(2.dp, DermaGreen, RoundedCornerShape(24.dp))
