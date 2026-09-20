@@ -301,7 +301,7 @@ fun ConditionTrackCard(track: ConditionTrack, onScanAgain: () -> Unit, onDeleteS
                     )
                 }
                 Box(modifier = Modifier.background(track.color.copy(alpha = if (settings.highContrast) 0.2f else 0.1f), RoundedCornerShape(20.dp)).padding(horizontal = 10.dp, vertical = 4.dp)) {
-                    Text("${track.scans.size} scans", fontSize = settings.textSm.sp, color = track.color, fontWeight = FontWeight.SemiBold)
+                    Text("${track.scans.size} ${if (track.scans.size == 1) "scan" else "scans"}", fontSize = settings.textSm.sp, color = track.color, fontWeight = FontWeight.SemiBold)
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 val chevronRotation by animateFloatAsState(if (isExpanded) 0f else 180f, label = "chevronRotation")
