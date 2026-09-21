@@ -35,6 +35,7 @@ import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.NoCredentialException
 import androidx.navigation.NavController
 import com.dermalens.app.BuildConfig
 import com.dermalens.app.R
@@ -361,9 +362,14 @@ fun LoginScreen(navController: NavController) {
                             } else {
                                 navController.navigate(Screen.Home.route) { popUpTo(Screen.Login.route) { inclusive = true } }
                             }
+                        } catch (e: NoCredentialException) {
+                            // Distinct from a plain cancellation -- there's genuinely no Google
+                            // account on this device/profile for the picker to offer. Silently
+                            // doing nothing here reads as a broken button, so say so explicitly.
+                            loginError = "No Google account found on this device. Add one in Settings, then try again."
                         } catch (e: GetCredentialException) {
-                            // User backed out of the account picker, or no Google account is set
-                            // up on this device -- not a real error, nothing to show.
+                            // User backed out of the account picker -- not a real error, nothing
+                            // to show.
                         } catch (e: Exception) {
                             loginError = "Google sign-in failed. Please try again."
                         }
@@ -533,9 +539,14 @@ fun RegisterScreen(navController: NavController) {
                             // Google-verified emails are always pre-verified -- no VerifyEmail
                             // detour needed here, unlike the password path above.
                             navController.navigate(Screen.Home.route) { popUpTo(Screen.Register.route) { inclusive = true } }
+                        } catch (e: NoCredentialException) {
+                            // Distinct from a plain cancellation -- there's genuinely no Google
+                            // account on this device/profile for the picker to offer. Silently
+                            // doing nothing here reads as a broken button, so say so explicitly.
+                            registerError = "No Google account found on this device. Add one in Settings, then try again."
                         } catch (e: GetCredentialException) {
-                            // User backed out of the account picker, or no Google account is set
-                            // up on this device -- not a real error, nothing to show.
+                            // User backed out of the account picker -- not a real error, nothing
+                            // to show.
                         } catch (e: Exception) {
                             registerError = "Google sign-in failed. Please try again."
                         }
