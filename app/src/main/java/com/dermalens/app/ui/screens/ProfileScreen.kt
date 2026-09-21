@@ -199,7 +199,11 @@ fun ProfileScreen(navController: NavController) {
             ProfileSectionHeader("App")
             Spacer(modifier = Modifier.height(8.dp))
             ProfileMenuCard {
-                ProfileMenuItem(icon = Icons.Default.History, iconBg = Color(0xFFF5F3FF), iconTint = Color(0xFF7C3AED), title = "Scan History", subtitle = "View all your past scans", onClick = { navController.navigate(Screen.ProgressTracker.route) })
+                // Was "Scan History" -- the only place in the app that called this screen
+                // anything other than "Progress" (bottom nav tab, Home's Quick Actions card, and
+                // the screen's own header all say "Progress"/"Progress Tracker"). Same
+                // destination, so the label should match instead of implying a different screen.
+                ProfileMenuItem(icon = Icons.Default.History, iconBg = Color(0xFFF5F3FF), iconTint = Color(0xFF7C3AED), title = "Progress", subtitle = "View all your past scans", onClick = { navController.navigate(Screen.ProgressTracker.route) })
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = if (settings.highContrast) Color(0xFFCCCCCC) else Color(0xFFF3F4F6))
                 ProfileMenuItem(icon = Icons.Default.LocationOn, iconBg = Color(0xFFF0FDF4), iconTint = Color(0xFF16A34A), title = "Find Clinics", subtitle = "Locate nearby dermatologists", onClick = { navController.navigate(Screen.ClinicLocator.route) })
             }
