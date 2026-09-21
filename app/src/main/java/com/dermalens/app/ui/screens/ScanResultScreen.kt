@@ -96,7 +96,7 @@ val mockDetectionResults = listOf(
 )
 
 /**
- * Inserts or updates this scan's history row. Shared by both the "Save to History" and
+ * Inserts or updates this scan's history row. Shared by both the "Save to Progress" and
  * "Contribute to Research" buttons so a user who taps both ends up with one row, not two --
  * passing back the previous call's returned id makes the second insert an update (Room's
  * REPLACE conflict strategy) rather than a duplicate. [contribute] controls only whether the
@@ -238,7 +238,7 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null, sca
     // Detected" card below still renders underneath, so dismissing the dialog (rather than
     // retaking) still leaves the user somewhere useful instead of a dead end.
     var showLowConfidenceDialog by remember { mutableStateOf(result.isLowConfidence) }
-    // Set true only when Save to History actually also triggered a research upload (contribute
+    // Set true only when Save to Progress actually also triggered a research upload (contribute
     // toggle on + image copy succeeded) -- not on every save, since most saves don't contribute.
     var showContributionDialog by remember { mutableStateOf(false) }
     // The actual consent moment -- shown right after a successful save, only if the Contribute
@@ -570,13 +570,16 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null, sca
                             }
                         }
                     },
-                    modifier = Modifier.fillMaxWidth().height(52.dp).semantics { contentDescription = if (isSaved) "Scan saved to history" else "Save scan to history" },
+                    modifier = Modifier.fillMaxWidth().height(52.dp).semantics { contentDescription = if (isSaved) "Scan saved to Progress" else "Save scan to Progress" },
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = if (isSaved) Color(0xFF16A34A) else Color(0xFF0284C7))
                 ) {
                     Icon(if (isSaved) Icons.Default.Check else Icons.Default.BookmarkAdd, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(if (isSaved) "Saved to History!" else "Save to History", fontSize = settings.textLg.sp, fontWeight = FontWeight.SemiBold)
+                    // Was "Save to History" -- renamed to match the one consistent name the rest
+                    // of the app now uses for this same feature (bottom nav tab, Home's card,
+                    // Profile's menu item, the screen's own header all say "Progress").
+                    Text(if (isSaved) "Saved to Progress!" else "Save to Progress", fontSize = settings.textLg.sp, fontWeight = FontWeight.SemiBold)
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
