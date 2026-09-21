@@ -41,4 +41,9 @@ interface ScanRecordDao {
 
     @Query("UPDATE scan_records SET notes = :notes WHERE id = :scanId")
     suspend fun updateNotes(scanId: Int, notes: String)
+
+    // Called right after inserting a brand-new (non-continuing) scan, so it becomes the root of
+    // its own trackGroupId instead of staying null -- see ScanRecord.trackGroupId.
+    @Query("UPDATE scan_records SET trackGroupId = :trackGroupId WHERE id = :scanId")
+    suspend fun setTrackGroupId(scanId: Int, trackGroupId: Int)
 }

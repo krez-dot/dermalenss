@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import com.dermalens.app.data.model.ScanRecord
 import com.dermalens.app.data.model.User
 
-@Database(entities = [User::class, ScanRecord::class], version = 6, exportSchema = false)
+@Database(entities = [User::class, ScanRecord::class], version = 7, exportSchema = false)
 abstract class DermaDatabase : RoomDatabase() {
     abstract fun userDao(): UserDao
     abstract fun scanRecordDao(): ScanRecordDao

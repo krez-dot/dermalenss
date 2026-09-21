@@ -34,9 +34,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-sealed class BottomNavItem(val route: String, val icon: ImageVector, val label: String) {
+// route is the template used to detect "is this tab currently selected" (NavDestination.route
+// always reports the raw {placeholder} template, never the filled-in runtime string) --
+// navigateRoute is the actual, fully-resolved string passed to navigate(). They're the same for
+// every tab except Scan, whose route now carries an optional continueTrackGroupId argument.
+sealed class BottomNavItem(val route: String, val icon: ImageVector, val label: String, val navigateRoute: String = route) {
     object Home : BottomNavItem(Screen.Home.route, Icons.Default.Home, "Home")
-    object Scan : BottomNavItem(Screen.Scan.route, Icons.Default.CameraAlt, "Scan")
+    object Scan : BottomNavItem(Screen.Scan.route, Icons.Default.CameraAlt, "Scan", navigateRoute = Screen.Scan.createRoute())
     object Progress : BottomNavItem(Screen.ProgressTracker.route, Icons.Default.Timeline, "Progress")
     object Profile : BottomNavItem(Screen.Profile.route, Icons.Default.Person, "Profile")
 }
@@ -64,7 +68,7 @@ fun DermaBottomNavBar(navController: NavController) {
                         interactionSource = navInteractionSource,
                         indication = null,
                         onClick = {
-                            navController.navigate(item.route) {
+                            navController.navigate(item.navigateRoute) {
                                 popUpTo(navController.graph.findStartDestination().id) { saveState = true }
                                 launchSingleTop = true
                                 restoreState = true
@@ -216,7 +220,7 @@ fun HomeScreen(navController: NavController) {
                     modifier = Modifier.fillMaxWidth()
                         .clickable {
                             if (recentScan != null) navController.navigate(Screen.ProgressTracker.route)
-                            else navController.navigate(Screen.Scan.route)
+                            else navController.navigate(Screen.Scan.createRoute())
                         }
                         .then(if (settings.highContrast) Modifier.border(1.5.dp, Color.Black, RoundedCornerShape(16.dp)) else Modifier),
                     shape = RoundedCornerShape(16.dp),
@@ -259,7 +263,7 @@ fun HomeScreen(navController: NavController) {
                 Text("Quick Actions", fontSize = settings.textLg.sp, fontWeight = FontWeight.Bold, color = settings.textPrimary)
                 Spacer(modifier = Modifier.height(10.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    QuickActionCard(icon = Icons.Default.CameraAlt, label = "Scan Skin", color = DermaGreen, modifier = Modifier.weight(1f), onClick = { navController.navigate(Screen.Scan.route) })
+                    QuickActionCard(icon = Icons.Default.CameraAlt, label = "Scan Skin", color = DermaGreen, modifier = Modifier.weight(1f), onClick = { navController.navigate(Screen.Scan.createRoute()) })
                     QuickActionCard(icon = Icons.Default.LocationOn, label = "Find Clinics", color = Color(0xFF0284C7), modifier = Modifier.weight(1f), onClick = { navController.navigate(Screen.ClinicLocator.route) })
                     QuickActionCard(icon = Icons.Default.Timeline, label = "Progress", color = Color(0xFF7C3AED), modifier = Modifier.weight(1f), onClick = { navController.navigate(Screen.ProgressTracker.route) })
                 }

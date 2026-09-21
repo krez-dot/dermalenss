@@ -108,7 +108,8 @@ private suspend fun saveScan(
     result: DetectionResult,
     imageUri: String?,
     existingScanId: Int?,
-    contribute: Boolean
+    contribute: Boolean,
+    continueTrackGroupId: Int? = null
 ): Int? {
     val db = DermaDatabase.getDatabase(context)
     val prefs = context.getSharedPreferences(DermaPrefs.PREFS_NAME, android.content.Context.MODE_PRIVATE)
@@ -149,6 +150,12 @@ private suspend fun saveScan(
     val notes = existingRecord?.notes
         ?: "Scanned on ${java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()).format(java.util.Date())}"
 
+    // Preserve a group already assigned by an earlier save of this same row (e.g. Save to
+    // Progress, then Contribute to Research afterward); otherwise use whatever this save call
+    // was told to continue (set from "Scan Again"'s specific card, or null from "Start New Scan"
+    // / a fresh Scan tab entry).
+    val groupIdForInsert = existingRecord?.trackGroupId ?: continueTrackGroupId
+
     val id = db.scanRecordDao().insertScan(
         ScanRecord(
             id = existingScanId ?: 0,
@@ -158,15 +165,22 @@ private suspend fun saveScan(
             severity = result.severity,
             notes = notes,
             imagePath = savedImagePath,
-            contributedForTraining = contribute && savedImagePath.isNotEmpty()
+            contributedForTraining = contribute && savedImagePath.isNotEmpty(),
+            trackGroupId = groupIdForInsert
         )
-    )
-    return id.toInt()
+    ).toInt()
+
+    // A genuinely new, non-continuing scan has no group yet (groupIdForInsert was null) --
+    // becomes the root of its own group using its own freshly-assigned id.
+    if (groupIdForInsert == null) {
+        db.scanRecordDao().setTrackGroupId(id, id)
+    }
+    return id
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ScanResultScreen(navController: NavController, imageUri: String? = null, scanId: Int = -1) {
+fun ScanResultScreen(navController: NavController, imageUri: String? = null, scanId: Int = -1, continueTrackGroupId: Int = -1) {
     val settings = LocalAppSettings.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -275,7 +289,7 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null, sca
                 TextButton(onClick = {
                     showContributePrompt = false
                     scope.launch {
-                        savedScanId = saveScan(context, result, imageUri, savedScanId, contribute = true)
+                        savedScanId = saveScan(context, result, imageUri, savedScanId, contribute = true, continueTrackGroupId = continueTrackGroupId.takeIf { it != -1 })
                         isContributed = true
                         com.dermalens.app.worker.ContributionUploadScheduler.triggerImmediateUpload(context)
                         showContributionDialog = true
@@ -328,7 +342,7 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null, sca
             confirmButton = {
                 TextButton(onClick = {
                     showLowConfidenceDialog = false
-                    navController.navigate(Screen.Scan.route) { popUpTo(Screen.Scan.route) { inclusive = true } }
+                    navController.navigate(Screen.Scan.createRoute()) { popUpTo(Screen.Scan.route) { inclusive = true } }
                 }) { Text("Retake Photo") }
             },
             dismissButton = {
@@ -562,7 +576,7 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null, sca
                                 // never silently also upload the image. Whether to contribute is
                                 // asked right after, as its own explicit yes/no prompt, so consent
                                 // is real rather than a side effect of tapping this button.
-                                savedScanId = saveScan(context, result, imageUri, savedScanId, contribute = false)
+                                savedScanId = saveScan(context, result, imageUri, savedScanId, contribute = false, continueTrackGroupId = continueTrackGroupId.takeIf { it != -1 })
                                 isSaved = true
                                 if (contributionFeatureEnabled && !isContributed) {
                                     showContributePrompt = true
@@ -585,7 +599,7 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null, sca
                 Spacer(modifier = Modifier.height(10.dp))
 
                 OutlinedButton(
-                    onClick = { navController.navigate(Screen.Scan.route) { popUpTo(Screen.Scan.route) { inclusive = true } } },
+                    onClick = { navController.navigate(Screen.Scan.createRoute()) { popUpTo(Screen.Scan.route) { inclusive = true } } },
                     modifier = Modifier.fillMaxWidth().height(52.dp).semantics { contentDescription = "Scan again" },
                     shape = RoundedCornerShape(14.dp),
                     border = BorderStroke(1.5.dp, Color(0xFFE5E7EB))

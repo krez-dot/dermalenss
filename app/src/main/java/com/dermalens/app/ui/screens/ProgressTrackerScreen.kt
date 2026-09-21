@@ -38,21 +38,24 @@ import com.dermalens.app.ui.LocalAppSettings
 import kotlinx.coroutines.launch
 
 data class ScanEntry(val id: Int, val date: String, val confidence: Float, val notes: String, val imagePath: String = "")
-data class ConditionTrack(val condition: String, val color: Color, val emoji: String, val scans: List<ScanEntry>)
+// trackGroupId identifies which specific occurrence/spot this card represents -- passed back to
+// Scan when "Scan Again" is tapped so the resulting new scan explicitly continues *this* card's
+// trend instead of just matching by condition name. See ScanRecord.trackGroupId.
+data class ConditionTrack(val condition: String, val color: Color, val emoji: String, val scans: List<ScanEntry>, val trackGroupId: Int)
 
 val mockProgressData = listOf(
     ConditionTrack("Papular Acne", Color(0xFFE53935), "🔴", listOf(
         ScanEntry(0, "May 1, 2026", 94.3f, "Initial scan — widespread breakout"),
         ScanEntry(0, "May 5, 2026", 89.2f, "Slight improvement after treatment"),
         ScanEntry(0, "May 10, 2026", 91.5f, "Significant improvement noted"),
-    )),
+    ), trackGroupId = 0),
     ConditionTrack("Eczema", Color(0xFFFF9800), "🟠", listOf(
         ScanEntry(0, "Apr 20, 2026", 87.6f, "Flare-up detected on forearm"),
         ScanEntry(0, "Apr 28, 2026", 85.1f, "Moisturizer routine helping"),
-    )),
+    ), trackGroupId = 0),
     ConditionTrack("Melasma", Color(0xFF795548), "🟤", listOf(
         ScanEntry(0, "May 3, 2026", 91.2f, "Brown patches on cheeks detected"),
-    ))
+    ), trackGroupId = 0)
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -79,8 +82,17 @@ fun ProgressTrackerScreen(navController: NavController) {
                 val earliest = scans.minOf { it.scanDate }
                 daysTracked = ((System.currentTimeMillis() - earliest) / (1000L * 60L * 60L * 24L)).toInt() + 1
             }
-            val grouped = scans.groupBy { it.condition }
-            conditionTracks = grouped.map { (condition, scanList) ->
+            // Grouped by trackGroupId, not condition -- two unrelated occurrences that happen to
+            // classify the same (a wart on one finger, an unrelated new wart on a toe) get their
+            // own separate cards instead of being conflated into one misleading trend. Falls back
+            // to the scan's own id for any pre-migration row that somehow has a null group (there
+            // shouldn't be any post-migration, since saveScan always assigns one on insert).
+            val grouped = scans.groupBy { it.trackGroupId ?: it.id }
+            conditionTracks = grouped.map { (groupId, scanList) ->
+                val sortedScans = scanList.sortedBy { it.scanDate }
+                // The card shows the *latest* classification for this group, not the first --
+                // reflects current status, matching the timeline's own "Latest scan" emphasis.
+                val condition = sortedScans.last().condition
                 val mockTrack = mockProgressData.find { it.condition == condition }
                 ConditionTrack(
                     condition = condition,
@@ -91,7 +103,7 @@ fun ProgressTrackerScreen(navController: NavController) {
                     // (filled dot, highlighted card, "Latest scan" label) are built around the
                     // *last* list item being the most recent one, matching the natural top-to-
                     // bottom "journey" reading of a progress timeline.
-                    scans = scanList.sortedBy { it.scanDate }.map { scan ->
+                    scans = sortedScans.map { scan ->
                         ScanEntry(
                             id = scan.id,
                             date = java.text.SimpleDateFormat("MMM dd, yyyy • h:mm a", java.util.Locale.getDefault())
@@ -100,9 +112,10 @@ fun ProgressTrackerScreen(navController: NavController) {
                             notes = scan.notes,
                             imagePath = scan.imagePath
                         )
-                    }
-                )
-            }
+                    },
+                    trackGroupId = groupId
+                ) to (sortedScans.lastOrNull()?.scanDate ?: 0L)
+            }.sortedByDescending { (_, latestRawDate) -> latestRawDate }.map { (track, _) -> track }
         }
     }
 
@@ -193,7 +206,7 @@ fun ProgressTrackerScreen(navController: NavController) {
                         )
                         Spacer(modifier = Modifier.height(20.dp))
                         Button(
-                            onClick = { navController.navigate(Screen.Scan.route) },
+                            onClick = { navController.navigate(Screen.Scan.createRoute()) },
                             modifier = Modifier.fillMaxWidth().height(52.dp),
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = DermaGreen)
@@ -211,7 +224,7 @@ fun ProgressTrackerScreen(navController: NavController) {
                     Column {
                         ConditionTrackCard(
                             track = track,
-                            onScanAgain = { navController.navigate(Screen.Scan.route) },
+                            onScanAgain = { navController.navigate(Screen.Scan.createRoute(continueTrackGroupId = track.trackGroupId)) },
                             onDeleteScan = { scanId ->
                                 scope.launch {
                                     db.scanRecordDao().deleteScan(scanId)
@@ -236,7 +249,7 @@ fun ProgressTrackerScreen(navController: NavController) {
             if (conditionTracks.isNotEmpty()) {
                 item {
                     Button(
-                        onClick = { navController.navigate(Screen.Scan.route) },
+                        onClick = { navController.navigate(Screen.Scan.createRoute()) },
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(52.dp),
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = DermaGreen)

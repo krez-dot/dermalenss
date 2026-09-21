@@ -184,7 +184,7 @@ private fun writeCropToCache(context: android.content.Context, cropped: Bitmap):
 }
 
 @Composable
-fun ScanScreen(navController: NavController) {
+fun ScanScreen(navController: NavController, continueTrackGroupId: Int = -1) {
     val context = LocalContext.current
     val activity = context as? android.app.Activity
     var hasCameraPermission by remember {
@@ -207,7 +207,7 @@ fun ScanScreen(navController: NavController) {
         if (!hasCameraPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    if (hasCameraPermission) CameraPreviewScreen(navController)
+    if (hasCameraPermission) CameraPreviewScreen(navController, continueTrackGroupId)
     else CameraPermissionDeniedScreen(
         onRequestPermission = { permissionLauncher.launch(Manifest.permission.CAMERA) },
         onOpenSettings = {
@@ -222,7 +222,7 @@ fun ScanScreen(navController: NavController) {
 }
 
 @Composable
-fun CameraPreviewScreen(navController: NavController) {
+fun CameraPreviewScreen(navController: NavController, continueTrackGroupId: Int = -1) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val prefs = remember { context.getSharedPreferences(DermaPrefs.PREFS_NAME, android.content.Context.MODE_PRIVATE) }
@@ -533,7 +533,7 @@ fun CameraPreviewScreen(navController: NavController) {
                                         )
                                     }
                                     isScanning = false
-                                    navController.navigate(Screen.ScanResult.createRoute((croppedUri ?: galleryUri).toString()))
+                                    navController.navigate(Screen.ScanResult.createRoute((croppedUri ?: galleryUri).toString(), continueTrackGroupId = continueTrackGroupId))
                                 }
                             } else {
                                 val capture = imageCapture
@@ -556,7 +556,7 @@ fun CameraPreviewScreen(navController: NavController) {
                                                 }
                                                 isScanning = false
                                                 navController.navigate(
-                                                    Screen.ScanResult.createRoute((croppedUri ?: uri).toString())
+                                                    Screen.ScanResult.createRoute((croppedUri ?: uri).toString(), continueTrackGroupId = continueTrackGroupId)
                                                 )
                                             }
                                         },
