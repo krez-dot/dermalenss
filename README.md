@@ -10,7 +10,7 @@ An Android skin disease detection app built with Jetpack Compose. DermaLens lets
 - **Condition Guidance** — Description, common symptoms, and recommendations shown directly on the scan result screen (content lives with the result it applies to, not in a separate browsable Care Guide screen).
 - **Clinic Locator** — GPS-based Google Map with custom markers, dermatology clinics found via the Google Places API, and driving routes drawn from OSRM. No results render until location access is actually granted — no fallback-location results shown alongside a "permission needed" banner.
 - **Contribute to Research** — Opt-in, and it actually uploads: after Save to History, a genuine yes/no prompt asks whether to also contribute that scan (never a silent side effect of saving). Consented scans are sent over Wi-Fi to a Google Apps Script bridge that files them into per-condition folders in the project owner's own Google Drive, ready to fold into a future retraining run. Anonymous by construction — the filename is a random UUID plus the detected condition, with no account identifier anywhere in the request (see [Contribute to Research pipeline](#contribute-to-research-pipeline) below).
-- **Account management** — Registration and password changes require 8+ characters with an uppercase letter, lowercase letter, number, and special character. Delete Account (Profile) reauthenticates, deletes local scan records and their photos, deletes the Firebase account, and clears the session.
+- **Account management** — Registration and password changes require 8+ characters with an uppercase letter, lowercase letter, number, and special character. Delete Account (Profile) reauthenticates, deletes local scan records and their photos, deletes the Firebase account, and clears the session. **Sign in with Google** is also available on Login/Register (Credential Manager → Firebase's `GoogleAuthProvider`) — one flow covers both login and first-time signup, since Firebase auto-creates the account the first time a given Google identity is used. Requires one-time setup per developer machine; see [Known Gaps](#known-gaps--good-first-issues) for a real limitation it introduces.
 - **Accessibility** — Font size slider, high contrast mode, propagated across all screens.
 - **Privacy Policy** — Full in-app privacy policy dialog.
 
@@ -26,7 +26,7 @@ An Android skin disease detection app built with Jetpack Compose. DermaLens lets
 | Maps | Google Maps (`maps-compose`) + Google Places API (clinic search) + OSRM (routing only) |
 | Location | `play-services-location` |
 | AI Model | YOLOv11 TFLite — real 6-class merged model (v2), overall mAP50 0.654, live-verified on-device (see [AI Model — Training & Evaluation](#ai-model--training--evaluation)) |
-| Auth | Firebase Authentication (email/password) — registration required, no guest/offline path |
+| Auth | Firebase Authentication (email/password, and Google via `androidx.credentials`) — registration required, no guest/offline path |
 | Research uploads | Google Apps Script Web App → project owner's Google Drive, via WorkManager (`NetworkType.UNMETERED`) |
 
 ## Project Structure
@@ -166,6 +166,7 @@ Not urgent, left for later. Good entry points if you want to help:
 - **No OTA / server-pushed model update mechanism.** `best.tflite` ships baked into the APK as a bundled asset — a new model version requires a full app update. A versioned model manifest + downloadable `.tflite` would allow improving detection without app-store releases.
 - **No formal accessibility audit.** Font scaling and high contrast are real and manually verified to propagate across all screens without truncation/clipping, but there's no formal WCAG 2.1 contrast-ratio audit and no TalkBack (screen reader) compatibility testing yet.
 - **Scabies re-annotation** — 114 images identified as needing per-lesion (not whole-image) boxes; see [AI Model history](#ai-model--training--evaluation).
+- **Delete Account and Change Password don't work for Google-only accounts.** Both reauthenticate via `EmailAuthProvider.getCredential(email, password)` before proceeding — a Google-signed-in user has no Firebase password to supply, so these fail every time for that account type, not just look wrong. Real fix: detect the account's actual sign-in provider (`firebaseUser.providerData`) and reauthenticate via Google's credential flow instead when it's Google-based, then adjust the UI (hide the password field, show a "Continue with Google to confirm" button instead) accordingly.
 
 ## Development Timeline
 CP2 Development Plan — May – November 2026

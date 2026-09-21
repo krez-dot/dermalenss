@@ -75,7 +75,37 @@ Either:
 - **Physical device**: enable Developer Options + USB Debugging on an Android phone, plug it in
   via USB, select it in the device dropdown, hit Run.
 
-## 7. A couple of known non-issues
+## 7. (Optional) Set up Sign in with Google
+
+The app builds and runs fine without this — the "Continue with Google" button on Login/Register
+will just show "Google sign-in failed" until it's configured. Needed only if you're working on or
+testing that path.
+
+1. **Enable Google as a sign-in provider**: [Firebase Console](https://console.firebase.google.com)
+   → DermaLens project → Authentication → Sign-in method → Add new provider → Google → enable it,
+   set a project support email, Save.
+2. **Grab the Web client ID**: after enabling, expand the Google provider row → under "Web SDK
+   configuration" copy the **Web client ID** (not an Android client ID — they're separate entries
+   that look similar).
+3. **Register your debug keystore's SHA-1**: Firebase Console → Project Settings (⚙️) → your
+   Android app (`com.dermalens.app`) → Add fingerprint → paste your SHA-1. Get yours with:
+   ```
+   keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android
+   ```
+   (Windows: usually `%USERPROFILE%\.android\debug.keystore`.) This is tied to the machine that
+   built the debug APK, not the repo — everyone on the team building locally needs their own
+   debug keystore's SHA-1 added here, same as the Maps API key restriction already works.
+4. **Add the Web client ID to `local.properties`** (same gitignored file as `MAPS_API_KEY`):
+   ```
+   GOOGLE_WEB_CLIENT_ID=your-web-client-id-here.apps.googleusercontent.com
+   ```
+5. Re-download `google-services.json` after adding the provider/fingerprint (it may have changed)
+   and replace the one at `app/google-services.json`.
+
+Without step 4, the build still succeeds (`GOOGLE_WEB_CLIENT_ID` just reads as blank), but tapping
+"Continue with Google" fails immediately.
+
+## 8. A couple of known non-issues
 
 - **VS Code** (if anyone opens the project there instead of Android Studio) will show
   "Unresolved reference: androidx" on every Compose/Room import. This is fake — VS Code doesn't
