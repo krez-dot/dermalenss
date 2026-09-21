@@ -1,5 +1,6 @@
 package com.dermalens.app.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -30,18 +31,30 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.credentials.CredentialManager
+import androidx.credentials.CustomCredential
+import androidx.credentials.GetCredentialRequest
+import androidx.credentials.exceptions.GetCredentialException
 import androidx.navigation.NavController
+import com.dermalens.app.BuildConfig
 import com.dermalens.app.R
 import com.dermalens.app.data.db.DermaDatabase
 import com.dermalens.app.data.model.User
 import com.dermalens.app.navigation.Screen
 import com.dermalens.app.ui.LocalAppSettings
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.auth.FirebaseAuthInvalidUserException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseAuthWeakPasswordException
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * Real format validation (was previously just `email.contains("@")`, which let through
@@ -71,6 +84,67 @@ fun firebaseAuthErrorMessage(e: Exception): String = when (e) {
     is FirebaseAuthUserCollisionException -> "An account with this email already exists."
     is FirebaseAuthInvalidUserException -> "No account found with this email, or it has been disabled."
     else -> e.localizedMessage ?: "Something went wrong. Please try again."
+}
+
+private suspend fun <T> com.google.android.gms.tasks.Task<T>.awaitTask(): T = suspendCancellableCoroutine { cont ->
+    addOnSuccessListener { cont.resume(it) }
+    addOnFailureListener { cont.resumeWithException(it) }
+}
+
+/**
+ * Runs the Credential Manager "Sign in with Google" flow and exchanges the resulting Google ID
+ * token for a real Firebase session via GoogleAuthProvider -- the same provider Firebase itself
+ * expects. signInWithCredential transparently creates a new Firebase account the first time a
+ * given Google identity is used, so this one function covers both login and first-time signup;
+ * there's no separate "register with Google" path needed.
+ *
+ * Requires GOOGLE_WEB_CLIENT_ID (the *Web* client ID from Firebase Console's Google provider
+ * settings, not an Android client ID) in local.properties -- see SETUP.md. Throws
+ * GetCredentialException on cancellation/no-account-available (not a real error, just the user
+ * backing out) or other exceptions on genuine failure; callers decide how to surface each.
+ */
+private suspend fun signInWithGoogle(context: android.content.Context): FirebaseUser {
+    val googleIdOption = GetGoogleIdOption.Builder()
+        .setFilterByAuthorizedAccounts(false)
+        .setServerClientId(BuildConfig.GOOGLE_WEB_CLIENT_ID)
+        .build()
+    val request = GetCredentialRequest.Builder().addCredentialOption(googleIdOption).build()
+    val result = CredentialManager.create(context).getCredential(context, request)
+    val credential = result.credential
+    if (credential !is CustomCredential || credential.type != GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+        throw IllegalStateException("Unexpected credential type from Google Sign-In.")
+    }
+    val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
+    val firebaseCredential = GoogleAuthProvider.getCredential(googleIdTokenCredential.idToken, null)
+    return FirebaseAuth.getInstance().signInWithCredential(firebaseCredential).awaitTask().user
+        ?: throw IllegalStateException("Google sign-in succeeded but returned no user.")
+}
+
+/**
+ * Same self-healing profile pattern email/password login already uses (see LoginScreen below):
+ * ensures a local Room row exists for this Firebase user before the rest of the app reads one.
+ * Google-verified emails are always pre-verified, so unlike Register this never routes through
+ * VerifyEmail.
+ */
+private suspend fun syncLocalProfileForGoogleUser(context: android.content.Context, firebaseUser: FirebaseUser) {
+    val db = DermaDatabase.getDatabase(context)
+    val prefs = context.getSharedPreferences(DermaPrefs.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    val existing = db.userDao().getUserByFirebaseUid(firebaseUser.uid)
+    if (existing == null) {
+        db.userDao().insertUser(
+            User(
+                fullName = firebaseUser.displayName ?: firebaseUser.email?.substringBefore("@") ?: "User",
+                email = firebaseUser.email ?: "",
+                passwordHash = "",
+                firebaseUid = firebaseUser.uid
+            )
+        )
+    }
+    prefs.edit().apply {
+        putBoolean(DermaPrefs.KEY_IS_LOGGED_IN, true)
+        putString(DermaPrefs.KEY_USER_EMAIL, firebaseUser.email ?: "")
+        apply()
+    }
 }
 
 @Composable
@@ -275,6 +349,37 @@ fun LoginScreen(navController: NavController) {
 
             Spacer(modifier = Modifier.height(20.dp))
 
+            OutlinedButton(
+                onClick = {
+                    loginError = ""
+                    scope.launch {
+                        try {
+                            val firebaseUser = signInWithGoogle(context)
+                            syncLocalProfileForGoogleUser(context, firebaseUser)
+                            if (!firebaseUser.isEmailVerified) {
+                                navController.navigate(Screen.VerifyEmail.route) { popUpTo(Screen.Login.route) { inclusive = true } }
+                            } else {
+                                navController.navigate(Screen.Home.route) { popUpTo(Screen.Login.route) { inclusive = true } }
+                            }
+                        } catch (e: GetCredentialException) {
+                            // User backed out of the account picker, or no Google account is set
+                            // up on this device -- not a real error, nothing to show.
+                        } catch (e: Exception) {
+                            loginError = "Google sign-in failed. Please try again."
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(54.dp).semantics { contentDescription = "Continue with Google button" },
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.5.dp, if (settings.highContrast) Color.Black else Color(0xFFE5E7EB))
+            ) {
+                Icon(painter = painterResource(id = R.drawable.ic_google_logo), contentDescription = null, tint = Color.Unspecified, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(10.dp))
+                Text("Continue with Google", fontSize = settings.textLg.sp, fontWeight = FontWeight.SemiBold, color = settings.textPrimary)
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Don't have an account?", fontSize = settings.textMd.sp, color = settings.textSecondary)
                 TextButton(onClick = { navController.navigate(Screen.Register.route) }) {
@@ -406,6 +511,43 @@ fun RegisterScreen(navController: NavController) {
             ) {
                 if (isLoading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
                 else Text("Create Account", fontSize = settings.textLg.sp, fontWeight = FontWeight.SemiBold)
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                HorizontalDivider(modifier = Modifier.weight(1f), color = if (settings.highContrast) Color.Black else Color(0xFFE5E7EB))
+                Text("  or  ", fontSize = settings.textBase.sp, color = settings.textSecondary)
+                HorizontalDivider(modifier = Modifier.weight(1f), color = if (settings.highContrast) Color.Black else Color(0xFFE5E7EB))
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            OutlinedButton(
+                onClick = {
+                    registerError = ""
+                    scope.launch {
+                        try {
+                            val firebaseUser = signInWithGoogle(context)
+                            syncLocalProfileForGoogleUser(context, firebaseUser)
+                            // Google-verified emails are always pre-verified -- no VerifyEmail
+                            // detour needed here, unlike the password path above.
+                            navController.navigate(Screen.Home.route) { popUpTo(Screen.Register.route) { inclusive = true } }
+                        } catch (e: GetCredentialException) {
+                            // User backed out of the account picker, or no Google account is set
+                            // up on this device -- not a real error, nothing to show.
+                        } catch (e: Exception) {
+                            registerError = "Google sign-in failed. Please try again."
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(54.dp).semantics { contentDescription = "Continue with Google button" },
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.5.dp, if (settings.highContrast) Color.Black else Color(0xFFE5E7EB))
+            ) {
+                Icon(painter = painterResource(id = R.drawable.ic_google_logo), contentDescription = null, tint = Color.Unspecified, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(10.dp))
+                Text("Continue with Google", fontSize = settings.textLg.sp, fontWeight = FontWeight.SemiBold, color = settings.textPrimary)
             }
 
             Spacer(modifier = Modifier.height(20.dp))

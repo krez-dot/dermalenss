@@ -16,6 +16,10 @@ val localProperties = Properties().apply {
 val mapsApiKey: String = localProperties.getProperty("MAPS_API_KEY", "")
 val appsScriptUrl: String = localProperties.getProperty("APPS_SCRIPT_URL", "")
 val contributionUploadSecret: String = localProperties.getProperty("CONTRIBUTION_UPLOAD_SECRET", "")
+// The *Web* client ID from Firebase Console -> Authentication -> Sign-in method -> Google ->
+// Web SDK configuration -- not an Android client ID. Credential Manager's Google ID flow signs
+// requests against this one regardless of platform; see SETUP.md for the full walkthrough.
+val googleWebClientId: String = localProperties.getProperty("GOOGLE_WEB_CLIENT_ID", "")
 
 android {
     namespace = "com.dermalens.app"
@@ -34,6 +38,7 @@ android {
         buildConfigField("String", "MAPS_API_KEY", "\"$mapsApiKey\"")
         buildConfigField("String", "APPS_SCRIPT_URL", "\"$appsScriptUrl\"")
         buildConfigField("String", "CONTRIBUTION_UPLOAD_SECRET", "\"$contributionUploadSecret\"")
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
     }
 
     buildTypes {
@@ -133,6 +138,11 @@ dependencies {
     // newest version that's actually compatible with this project's Kotlin version.
     implementation(platform("com.google.firebase:firebase-bom:33.5.1"))
     implementation("com.google.firebase:firebase-auth")
+
+    // ── Sign in with Google (Credential Manager) ─────────────────────────
+    implementation("androidx.credentials:credentials:1.3.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
 
     // ── Testing ───────────────────────────────────────────────────────────
     testImplementation(libs.junit)
