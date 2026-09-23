@@ -233,6 +233,13 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null, sca
     // reusing its real id keeps any further action (e.g. Contribute to Research, tapped later
     // than the original save) updating this same row instead of inserting a duplicate.
     var isSaved by remember { mutableStateOf(isHistoryView) }
+    // isSaved only flips to true *after* the async saveScan() call returns, so a rapid
+    // double-tap on "Save to Progress" could pass the `!isSaved` guard twice before the first
+    // save resolved, launching two concurrent saves that both read the same stale
+    // savedScanId==null and each insert their own new row instead of the second one updating
+    // the first (PRELAUNCH_AUDIT_2026-09-21.md #2). isSaving is set synchronously, before
+    // launching the coroutine, so the second tap is blocked immediately rather than racing.
+    var isSaving by remember { mutableStateOf(false) }
     var isContributed by remember { mutableStateOf(false) }
     var savedScanId by remember { mutableStateOf(if (isHistoryView) scanId else null) }
 
@@ -570,30 +577,49 @@ fun ScanResultScreen(navController: NavController, imageUri: String? = null, sca
 
                 Button(
                     onClick = {
-                        if (!isSaved) {
+                        // Guard set synchronously, before launch -- see isSaving's declaration
+                        // above for why this can't wait until the coroutine actually runs.
+                        if (!isSaved && !isSaving) {
+                            isSaving = true
                             scope.launch {
-                                // contribute = false here, deliberately -- saving to history must
-                                // never silently also upload the image. Whether to contribute is
-                                // asked right after, as its own explicit yes/no prompt, so consent
-                                // is real rather than a side effect of tapping this button.
-                                savedScanId = saveScan(context, result, imageUri, savedScanId, contribute = false, continueTrackGroupId = continueTrackGroupId.takeIf { it != -1 })
-                                isSaved = true
-                                if (contributionFeatureEnabled && !isContributed) {
-                                    showContributePrompt = true
+                                try {
+                                    // contribute = false here, deliberately -- saving to history
+                                    // must never silently also upload the image. Whether to
+                                    // contribute is asked right after, as its own explicit
+                                    // yes/no prompt, so consent is real rather than a side
+                                    // effect of tapping this button.
+                                    savedScanId = saveScan(context, result, imageUri, savedScanId, contribute = false, continueTrackGroupId = continueTrackGroupId.takeIf { it != -1 })
+                                    isSaved = true
+                                    if (contributionFeatureEnabled && !isContributed) {
+                                        showContributePrompt = true
+                                    }
+                                } catch (e: Exception) {
+                                    // Was previously unhandled -- a DB insert failure (disk full,
+                                    // constraint violation, I/O error) crashed the app instead of
+                                    // showing an error on one of the most-used interactions in
+                                    // the app (PRELAUNCH_AUDIT_2026-09-21.md #3).
+                                    android.widget.Toast.makeText(context, "Couldn't save this scan. Please try again.", android.widget.Toast.LENGTH_SHORT).show()
+                                } finally {
+                                    isSaving = false
                                 }
                             }
                         }
                     },
+                    enabled = !isSaving,
                     modifier = Modifier.fillMaxWidth().height(52.dp).semantics { contentDescription = if (isSaved) "Scan saved to Progress" else "Save scan to Progress" },
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = if (isSaved) Color(0xFF16A34A) else Color(0xFF0284C7))
                 ) {
-                    Icon(if (isSaved) Icons.Default.Check else Icons.Default.BookmarkAdd, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                    if (isSaving) {
+                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(if (isSaved) Icons.Default.Check else Icons.Default.BookmarkAdd, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                    }
                     Spacer(modifier = Modifier.width(8.dp))
                     // Was "Save to History" -- renamed to match the one consistent name the rest
                     // of the app now uses for this same feature (bottom nav tab, Home's card,
                     // Profile's menu item, the screen's own header all say "Progress").
-                    Text(if (isSaved) "Saved to Progress!" else "Save to Progress", fontSize = settings.textLg.sp, fontWeight = FontWeight.SemiBold)
+                    Text(if (isSaved) "Saved to Progress!" else if (isSaving) "Saving..." else "Save to Progress", fontSize = settings.textLg.sp, fontWeight = FontWeight.SemiBold)
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))

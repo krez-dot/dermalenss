@@ -24,10 +24,20 @@
         <meta-data
             android:name="com.google.android.geo.API_KEY"
             android:value="${MAPS_API_KEY}" />
+        <!--
+          screenOrientation="portrait": a rotation mid-scan otherwise recreates this single
+          Activity, which CameraX's Camera/ImageCapture/PreviewView objects (live hardware
+          sessions, not serializable) can never survive regardless of how their Compose state is
+          held (PRELAUNCH_AUDIT_2026-09-21.md #28). No screen in this app has a landscape-specific
+          layout to switch to anyway (see #29, "Tablet and landscape layouts are untested"), so
+          this just makes that already-true constraint explicit instead of silently crashing or
+          losing state on a free rotation.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:screenOrientation="portrait"
             android:theme="@style/Theme.DermaLens">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

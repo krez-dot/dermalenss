@@ -24,6 +24,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.credentials.exceptions.GetCredentialException
 import androidx.navigation.NavController
 import com.dermalens.app.R
 import com.dermalens.app.navigation.Screen
@@ -364,6 +365,12 @@ fun ProfileScreen(navController: NavController) {
     // account itself, so this actually fulfills the Privacy Policy's existing "you may delete
     // your account and all associated data at any time" promise instead of leaving it unbuilt.
     if (showDeleteAccountDialog) {
+        // Google-only accounts have no Firebase password credential -- EmailAuthProvider can't
+        // reauthenticate them, so they confirm via a fresh Google credential instead. See
+        // PRELAUNCH_AUDIT_2026-09-21.md #1.
+        val isGoogleOnlyDelete = remember(showDeleteAccountDialog) {
+            FirebaseAuth.getInstance().currentUser?.let { isGoogleOnlyAccount(it) } ?: false
+        }
         AlertDialog(
             onDismissRequest = { if (!isDeletingAccount) showDeleteAccountDialog = false },
             icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = Color(0xFF7F1D1D)) },
@@ -371,29 +378,37 @@ fun ProfileScreen(navController: NavController) {
             text = {
                 Column {
                     Text(
-                        "This permanently deletes your account, scan history, and saved images. This cannot be undone. Enter your password to confirm.",
+                        if (isGoogleOnlyDelete)
+                            "This permanently deletes your account, scan history, and saved images. This cannot be undone. Confirm with Google to continue."
+                        else
+                            "This permanently deletes your account, scan history, and saved images. This cannot be undone. Enter your password to confirm.",
                         color = settings.textPrimary,
                         fontSize = settings.textMd.sp
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = deleteAccountPassword,
-                        onValueChange = { deleteAccountPassword = it; deleteAccountError = "" },
-                        label = { Text("Password") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        singleLine = true,
-                        enabled = !isDeletingAccount,
-                        isError = deleteAccountError.isNotEmpty(),
-                        supportingText = { if (deleteAccountError.isNotEmpty()) Text(deleteAccountError, color = Color(0xFFDC2626)) },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    if (!isGoogleOnlyDelete) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = deleteAccountPassword,
+                            onValueChange = { deleteAccountPassword = it; deleteAccountError = "" },
+                            label = { Text("Password") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            singleLine = true,
+                            enabled = !isDeletingAccount,
+                            isError = deleteAccountError.isNotEmpty(),
+                            supportingText = { if (deleteAccountError.isNotEmpty()) Text(deleteAccountError, color = Color(0xFFDC2626)) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else if (deleteAccountError.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(deleteAccountError, color = Color(0xFFDC2626), fontSize = settings.textBase.sp)
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        if (deleteAccountPassword.isEmpty()) {
+                        if (!isGoogleOnlyDelete && deleteAccountPassword.isEmpty()) {
                             deleteAccountError = "Enter your password to confirm."
                             return@Button
                         }
@@ -409,8 +424,13 @@ fun ProfileScreen(navController: NavController) {
                                     return@launch
                                 }
 
-                                val credential = EmailAuthProvider.getCredential(savedEmail, deleteAccountPassword)
-                                firebaseUser.reauthenticate(credential).awaitTask()
+                                if (isGoogleOnlyDelete) {
+                                    val credential = getGoogleAuthCredential(context)
+                                    firebaseUser.reauthenticate(credential).awaitTask()
+                                } else {
+                                    val credential = EmailAuthProvider.getCredential(savedEmail, deleteAccountPassword)
+                                    firebaseUser.reauthenticate(credential).awaitTask()
+                                }
 
                                 val db = DermaDatabase.getDatabase(context)
                                 val user = db.userDao().getUserByEmail(savedEmail)
@@ -436,6 +456,9 @@ fun ProfileScreen(navController: NavController) {
                                 showDeleteAccountDialog = false
                                 isDeletingAccount = false
                                 navController.navigate(Screen.Login.route) { popUpTo(Screen.Home.route) { inclusive = true } }
+                            } catch (e: GetCredentialException) {
+                                // User backed out of the Google picker -- not a real error.
+                                isDeletingAccount = false
                             } catch (e: Exception) {
                                 deleteAccountError = firebaseAuthErrorMessage(e)
                                 isDeletingAccount = false
@@ -449,7 +472,7 @@ fun ProfileScreen(navController: NavController) {
                     if (isDeletingAccount) {
                         CircularProgressIndicator(color = Color.White, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     } else {
-                        Text("Delete Account", fontSize = settings.textMd.sp)
+                        Text(if (isGoogleOnlyDelete) "Continue with Google" else "Delete Account", fontSize = settings.textMd.sp)
                     }
                 }
             },
@@ -585,6 +608,9 @@ fun EditProfileScreen(navController: NavController) {
     // untouched, which read as a fake/confusing success state.
     var originalName by remember { mutableStateOf<String?>(null) }
     val hasChanges = originalName != null && (name.trim() != originalName || newPassword.isNotEmpty())
+    // Google-only accounts have no Firebase password credential to reauthenticate or change --
+    // see PRELAUNCH_AUDIT_2026-09-21.md #1. The password fields below simply don't apply to them.
+    val isGoogleOnly = remember { FirebaseAuth.getInstance().currentUser?.let { isGoogleOnlyAccount(it) } ?: false }
 
     val fieldColors = OutlinedTextFieldDefaults.colors(
         focusedBorderColor = DermaGreen, focusedLabelColor = DermaGreen,
@@ -688,14 +714,19 @@ fun EditProfileScreen(navController: NavController) {
             Spacer(modifier = Modifier.height(12.dp))
 
             // Account security -- password changes go through Firebase reauthentication
-            // (re-enter current password first).
+            // (re-enter current password first). Google-only accounts have no password to
+            // change here at all; their credentials live with Google, not Firebase.
             Card(modifier = Modifier.fillMaxWidth().then(if (settings.highContrast) Modifier.border(1.dp, Color.Black, RoundedCornerShape(16.dp)) else Modifier), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = if (settings.highContrast) Color(0xFFF0F0F0) else Color.White), elevation = CardDefaults.cardElevation(if (settings.highContrast) 0.dp else 2.dp)) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Account Security", fontSize = settings.textBase.sp, fontWeight = FontWeight.SemiBold, color = settings.textSecondary)
-                    Text("Leave blank to keep your current password", fontSize = settings.textSm.sp, color = settings.textSecondary)
-                    OutlinedTextField(value = currentPassword, onValueChange = { currentPassword = it; isSaved = false; errorMessage = "" }, label = { Text("Current password") }, leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) }, trailingIcon = { IconButton(onClick = { showCurrentPassword = !showCurrentPassword }) { Icon(if (showCurrentPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = if (showCurrentPassword) "Hide password" else "Show password") } }, visualTransformation = if (showCurrentPassword) VisualTransformation.None else PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = fieldColors)
-                    OutlinedTextField(value = newPassword, onValueChange = { newPassword = it; isSaved = false; errorMessage = "" }, label = { Text("New password") }, leadingIcon = { Icon(Icons.Default.LockOpen, contentDescription = null) }, trailingIcon = { IconButton(onClick = { showNewPassword = !showNewPassword }) { Icon(if (showNewPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = if (showNewPassword) "Hide password" else "Show password") } }, visualTransformation = if (showNewPassword) VisualTransformation.None else PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = fieldColors)
-                    OutlinedTextField(value = confirmPassword, onValueChange = { confirmPassword = it; isSaved = false; errorMessage = "" }, label = { Text("Confirm new password") }, leadingIcon = { Icon(Icons.Default.LockOpen, contentDescription = null) }, trailingIcon = { IconButton(onClick = { showConfirmPassword = !showConfirmPassword }) { Icon(if (showConfirmPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = if (showConfirmPassword) "Hide password" else "Show password") } }, visualTransformation = if (showConfirmPassword) VisualTransformation.None else PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = fieldColors)
+                    if (isGoogleOnly) {
+                        Text("This account signs in with Google. Your password is managed by your Google account, not DermaLens.", fontSize = settings.textSm.sp, color = settings.textSecondary)
+                    } else {
+                        Text("Leave blank to keep your current password", fontSize = settings.textSm.sp, color = settings.textSecondary)
+                        OutlinedTextField(value = currentPassword, onValueChange = { currentPassword = it; isSaved = false; errorMessage = "" }, label = { Text("Current password") }, leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) }, trailingIcon = { IconButton(onClick = { showCurrentPassword = !showCurrentPassword }) { Icon(if (showCurrentPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = if (showCurrentPassword) "Hide password" else "Show password") } }, visualTransformation = if (showCurrentPassword) VisualTransformation.None else PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = fieldColors)
+                        OutlinedTextField(value = newPassword, onValueChange = { newPassword = it; isSaved = false; errorMessage = "" }, label = { Text("New password") }, leadingIcon = { Icon(Icons.Default.LockOpen, contentDescription = null) }, trailingIcon = { IconButton(onClick = { showNewPassword = !showNewPassword }) { Icon(if (showNewPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = if (showNewPassword) "Hide password" else "Show password") } }, visualTransformation = if (showNewPassword) VisualTransformation.None else PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = fieldColors)
+                        OutlinedTextField(value = confirmPassword, onValueChange = { confirmPassword = it; isSaved = false; errorMessage = "" }, label = { Text("Confirm new password") }, leadingIcon = { Icon(Icons.Default.LockOpen, contentDescription = null) }, trailingIcon = { IconButton(onClick = { showConfirmPassword = !showConfirmPassword }) { Icon(if (showConfirmPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = if (showConfirmPassword) "Hide password" else "Show password") } }, visualTransformation = if (showConfirmPassword) VisualTransformation.None else PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = fieldColors)
+                    }
                 }
             }
 

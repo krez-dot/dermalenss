@@ -8,7 +8,7 @@ Status: Firebase Auth live. **Multi-class merge is done (v2)** — a real 6-clas
 
 ## Dev Environment Notes (read this first if starting fresh)
 
-- **JAVA_HOME isn't set by default** in this shell. JDK 17 lives at `C:\Program Files\Eclipse Adoptium\jdk-17.0.20.8-hotspot` — set `$env:JAVA_HOME` before running `.\gradlew.bat` anything, in PowerShell (not Git Bash — Gradle needs PowerShell/cmd here).
+- **JAVA_HOME isn't set by default** in this shell. JDK 17 lives at `C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot` (path includes the patch version — check `C:\Program Files\Eclipse Adoptium\` if this stops matching after an auto-update) — set `$env:JAVA_HOME` before running `.\gradlew.bat` anything, in PowerShell (not Git Bash — Gradle needs PowerShell/cmd here).
 - **adb** is at `$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe`, **emulator** at `$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe`. AVD name: `DermaLensTest`. The emulator is not always running — check `adb devices` first, boot with `emulator.exe -avd DermaLensTest -WindowStyle Hidden` if empty, and poll `adb devices` until it shows `device` (takes 20-40s).
 - **Git Bash mangles device-absolute paths** starting with `/sdcard/...` — double the leading slash (`//sdcard/...`) when passing paths to `adb push`/`pull`/`shell` through the Bash tool, or just use PowerShell for adb calls instead.
 - **The Android system Photo Picker gets cluttered** by every screenshot taken during testing (they get indexed into the same "Recent" media view). Periodically `adb shell rm -f /sdcard/*.png` + `am force-stop com.android.providers.media.module` to reset it if the picker gets hard to navigate.

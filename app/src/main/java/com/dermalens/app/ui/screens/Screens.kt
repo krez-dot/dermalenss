@@ -93,18 +93,19 @@ private suspend fun <T> com.google.android.gms.tasks.Task<T>.awaitTask(): T = su
 }
 
 /**
- * Runs the Credential Manager "Sign in with Google" flow and exchanges the resulting Google ID
- * token for a real Firebase session via GoogleAuthProvider -- the same provider Firebase itself
- * expects. signInWithCredential transparently creates a new Firebase account the first time a
- * given Google identity is used, so this one function covers both login and first-time signup;
- * there's no separate "register with Google" path needed.
+ * Runs the Credential Manager "Sign in with Google" picker and exchanges the resulting Google ID
+ * token for a Firebase [com.google.firebase.auth.AuthCredential] -- the same provider Firebase
+ * itself expects. Split out from [signInWithGoogle] so ProfileScreen can reuse this for
+ * *reauthentication* (Google-only accounts have no Firebase password credential, so
+ * EmailAuthProvider.getCredential can't reauthenticate them for password changes or account
+ * deletion -- they need a fresh Google credential instead, same as this function produces).
  *
  * Requires GOOGLE_WEB_CLIENT_ID (the *Web* client ID from Firebase Console's Google provider
  * settings, not an Android client ID) in local.properties -- see SETUP.md. Throws
  * GetCredentialException on cancellation/no-account-available (not a real error, just the user
  * backing out) or other exceptions on genuine failure; callers decide how to surface each.
  */
-private suspend fun signInWithGoogle(context: android.content.Context): FirebaseUser {
+internal suspend fun getGoogleAuthCredential(context: android.content.Context): com.google.firebase.auth.AuthCredential {
     val googleIdOption = GetGoogleIdOption.Builder()
         .setFilterByAuthorizedAccounts(false)
         .setServerClientId(BuildConfig.GOOGLE_WEB_CLIENT_ID)
@@ -116,10 +117,27 @@ private suspend fun signInWithGoogle(context: android.content.Context): Firebase
         throw IllegalStateException("Unexpected credential type from Google Sign-In.")
     }
     val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
-    val firebaseCredential = GoogleAuthProvider.getCredential(googleIdTokenCredential.idToken, null)
+    return GoogleAuthProvider.getCredential(googleIdTokenCredential.idToken, null)
+}
+
+/**
+ * signInWithCredential transparently creates a new Firebase account the first time a given
+ * Google identity is used, so this one function covers both login and first-time signup; there's
+ * no separate "register with Google" path needed.
+ */
+private suspend fun signInWithGoogle(context: android.content.Context): FirebaseUser {
+    val firebaseCredential = getGoogleAuthCredential(context)
     return FirebaseAuth.getInstance().signInWithCredential(firebaseCredential).awaitTask().user
         ?: throw IllegalStateException("Google sign-in succeeded but returned no user.")
 }
+
+/** True when this account has no Firebase email/password credential -- i.e. it signed up via
+ * Google only. EmailAuthProvider.getCredential(email, password) can't reauthenticate such an
+ * account (there's no password on Firebase's side to check), so password-change and
+ * account-deletion flows need to branch to [getGoogleAuthCredential] instead. See
+ * PRELAUNCH_AUDIT_2026-09-21.md #1. */
+internal fun isGoogleOnlyAccount(user: FirebaseUser): Boolean =
+    user.providerData.none { it.providerId == com.google.firebase.auth.EmailAuthProvider.PROVIDER_ID }
 
 /**
  * Same self-healing profile pattern email/password login already uses (see LoginScreen below):
