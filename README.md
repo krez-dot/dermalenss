@@ -3,6 +3,19 @@ An Android skin disease detection app built with Jetpack Compose. DermaLens lets
 
 ---
 
+## Contents
+- [Features](#features)
+- [Tech Stack](#tech-stack)
+- [Project Structure](#project-structure)
+- [Building & Running](#building--running)
+- [Firebase Auth](#firebase-auth)
+- [Contribute to Research pipeline](#contribute-to-research-pipeline)
+- [AI Model — Training & Evaluation](#ai-model--training--evaluation)
+- [Known Limitations](#known-limitations)
+- [Known Gaps / Good First Issues](#known-gaps--good-first-issues)
+- [Development Timeline](#development-timeline)
+- [Team](#team)
+
 ## Features
 - **Skin Scan** — Capture via camera (pinch-to-zoom) or pick from gallery (pan + pinch-to-zoom to position, cropped to exactly what's in the guide frame before scanning); AI detects condition, severity, and confidence, with real bounding boxes (multi-region, NMS-filtered) drawn on the full result image. A result below the confidence floor shows an honest "Low Confidence" popup prompting a retake instead of a shaky guess.
 - **Family Tree** — Condition subtype/lookalike reference screens, reached from Scan Result's "Related Conditions" card — original schematic icons per condition, not stock photos.
@@ -10,7 +23,7 @@ An Android skin disease detection app built with Jetpack Compose. DermaLens lets
 - **Condition Guidance** — Description, common symptoms, and recommendations shown directly on the scan result screen (content lives with the result it applies to, not in a separate browsable Care Guide screen).
 - **Clinic Locator** — GPS-based Google Map with custom markers, dermatology clinics found via the Google Places API, and driving routes drawn from OSRM. No results render until location access is actually granted — no fallback-location results shown alongside a "permission needed" banner.
 - **Contribute to Research** — Opt-in, and it actually uploads: after Save to History, a genuine yes/no prompt asks whether to also contribute that scan (never a silent side effect of saving). Consented scans are sent over Wi-Fi to a Google Apps Script bridge that files them into per-condition folders in the project owner's own Google Drive, ready to fold into a future retraining run. Anonymous by construction — the filename is a random UUID plus the detected condition, with no account identifier anywhere in the request (see [Contribute to Research pipeline](#contribute-to-research-pipeline) below).
-- **Account management** — Registration and password changes require 8+ characters with an uppercase letter, lowercase letter, number, and special character. Delete Account (Profile) reauthenticates, deletes local scan records and their photos, deletes the Firebase account, and clears the session. **Sign in with Google** is also available on Login/Register (Credential Manager → Firebase's `GoogleAuthProvider`) — one flow covers both login and first-time signup, since Firebase auto-creates the account the first time a given Google identity is used. Requires one-time setup per developer machine; see [Known Gaps](#known-gaps--good-first-issues) for a real limitation it introduces.
+- **Account management** — Registration and password changes require 8+ characters with an uppercase letter, lowercase letter, number, and special character. Delete Account (Profile) reauthenticates, deletes local scan records and their photos, deletes the Firebase account, and clears the session. **Sign in with Google** is also available on Login/Register (Credential Manager → Firebase's `GoogleAuthProvider`) — one flow covers both login and first-time signup, since Firebase auto-creates the account the first time a given Google identity is used. Requires one-time setup per developer machine. Delete Account and password changes correctly detect Google-only accounts (no Firebase password credential exists to reauthenticate with) and reauthenticate via a fresh Google credential instead, rather than showing a password field that could never succeed.
 - **Accessibility** — Font size slider, high contrast mode, propagated across all screens.
 - **Privacy Policy** — Full in-app privacy policy dialog.
 
@@ -166,7 +179,6 @@ Not urgent, left for later. Good entry points if you want to help:
 - **No OTA / server-pushed model update mechanism.** `best.tflite` ships baked into the APK as a bundled asset — a new model version requires a full app update. A versioned model manifest + downloadable `.tflite` would allow improving detection without app-store releases.
 - **No formal accessibility audit.** Font scaling and high contrast are real and manually verified to propagate across all screens without truncation/clipping, but there's no formal WCAG 2.1 contrast-ratio audit and no TalkBack (screen reader) compatibility testing yet.
 - **Scabies re-annotation** — 114 images identified as needing per-lesion (not whole-image) boxes; see [AI Model history](#ai-model--training--evaluation).
-- **Delete Account and Change Password don't work for Google-only accounts.** Both reauthenticate via `EmailAuthProvider.getCredential(email, password)` before proceeding — a Google-signed-in user has no Firebase password to supply, so these fail every time for that account type, not just look wrong. Real fix: detect the account's actual sign-in provider (`firebaseUser.providerData`) and reauthenticate via Google's credential flow instead when it's Google-based, then adjust the UI (hide the password field, show a "Continue with Google to confirm" button instead) accordingly.
 
 ## Development Timeline
 CP2 Development Plan — May – November 2026
@@ -174,14 +186,16 @@ CP2 Development Plan — May – November 2026
 | Sprint | Duration | Track | Sprint Goal | Key Deliverables | Technologies | Lead | Status | Priority |
 |---|---|---|---|---|---|---|---|---|
 | Sprint 1 | May 25 – Jun 7, 2026 | App Development | Project setup, user authentication (register/login/logout), initial UI scaffolding | Login & register screens; auth flow; GitHub repo with project structure | Android Studio, Kotlin, Jetpack Compose, Firebase Auth / Room DB | Chrisent Dayniel | ✅ Done | 🔴 Critical |
-| Sprint 2 | Jun 8 – Jun 21, 2026 | App Dev + AI | CameraX real-time integration; start YOLOv11 model training on Google Colab | Working camera capture screen; initial YOLOv11 training pipeline; preliminary model weights | CameraX, Camera2 API, Python, Ultralytics YOLO, Kaggle/Roboflow dataset | Reynaldo | 🔄 In Progress | 🔴 Critical |
-| Sprint 3 | Jun 22 – Jul 5, 2026 | AI + Integration | Fine-tune YOLOv11, convert to TFLite, integrate on-device inference into the app | Optimized .tflite model in APK; real-time detection screen with bounding box + confidence score | TensorFlow Lite, GPU/NNAPI delegates, Ultralytics YOLO export, Google Colab T4 | Mark Joseph | 🔄 In Progress | 🔴 Critical |
+| Sprint 2 | Jun 8 – Jun 21, 2026 | App Dev + AI | CameraX real-time integration; start YOLOv11 model training on Google Colab | Working camera capture screen; initial YOLOv11 training pipeline; preliminary model weights | CameraX, Camera2 API, Python, Ultralytics YOLO, Kaggle/Roboflow dataset | Reynaldo | ✅ Done | 🔴 Critical |
+| Sprint 3 | Jun 22 – Jul 5, 2026 | AI + Integration | Fine-tune YOLOv11, convert to TFLite, integrate on-device inference into the app | Optimized .tflite model in APK; real-time detection screen with bounding box + confidence score | TensorFlow Lite, GPU/NNAPI delegates, Ultralytics YOLO export, Google Colab T4 | Mark Joseph | ✅ Done | 🔴 Critical |
 | Sprint 4 | Jul 6 – Jul 19, 2026 | App Development | Detection result screen, skincare guidance content, Room DB for scan history | Complete result screen; skincare guide for all 6 conditions; working Room DB schema | Jetpack Compose, Room DB, SQLite, pre-built knowledge base JSON | Reicee Owen | ✅ Done | 🟠 High |
 | Sprint 5 | Jul 20 – Aug 2, 2026 | App Development | Progress tracking dashboard, clinic locator via Google Maps, scan reminders | Progress tracker with charts; clinic locator with directions; WorkManager notifications | Google Maps SDK, Places API, WorkManager, MPAndroidChart / Compose Charts | Chrisent Dayniel | ✅ Done | 🟠 High |
-| Sprint 6 | Aug 3 – Aug 16, 2026 | Testing | Full system integration, functional testing (FR1–FR11), performance testing, survey | Stable DermaLens APK; functional + performance test results; 100-respondent survey data | Android Profiler, Likert scale questionnaire | All Members | ⬜ Not started | 🟠 High |
-| Sprint 7 | Aug 17 – Aug 30, 2026 | Bug Fixing | Resolve bugs from testing; UI/UX polish; start Chapter 5 documentation | Refined APK; resolved bug report; Chapter 5 draft; updated methodology docs | Android Studio Debugger, Compose Previews | Mark Joseph | 🔄 In Progress | 🟡 Medium |
+| Sprint 6 | Aug 3 – Aug 16, 2026 | Testing | Full system integration, functional testing (FR1–FR11), performance testing, survey | Stable DermaLens APK; functional + performance test results; 100-respondent survey data | Android Profiler, Likert scale questionnaire | All Members | ✅ Done | 🟠 High |
+| Sprint 7 | Aug 17 – Aug 30, 2026 | Bug Fixing | Resolve bugs from testing; UI/UX polish; start Chapter 5 documentation | Refined APK; resolved bug report; Chapter 5 draft; updated methodology docs | Android Studio Debugger, Compose Previews | Mark Joseph | ✅ Done | 🟡 Medium |
 | Sprint 8 | Aug 31 – Sep 27, 2026 | Documentation | Final documentation, complete all chapters, defense preparation | Final capstone paper (all chapters); defense slides; submitted manuscript; archived APK | Google Docs / MS Word, PowerPoint / Canva | All Members | ⬜ Not started | 🟡 Medium |
 | Post-Sprint | Oct – Nov 2026 | Wrap-up | Address panel feedback, finalize approved manuscript, archive project repository | Revised approved manuscript; archived repo; all submission requirements fulfilled | GitHub, Google Drive | All Members | ⬜ Not started | 🟢 Low |
+
+All app-development, integration, testing, and bug-fixing sprints (1–7) are complete. Current focus is improving the AI model's detection accuracy (see [AI Model — Training & Evaluation](#ai-model--training--evaluation) for the open items, e.g. Melasma's stalled score and the parked acne-subtype work) ahead of Sprint 8 documentation.
 
 ## Team
 - Mark Joseph Garcia
