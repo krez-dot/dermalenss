@@ -1,0 +1,86 @@
+rules_version = '2';
+
+// Clinic Locator's crowd-sourced "still open?" votes (ClinicVotes.kt) are the only Firestore
+// data this app uses, so everything else is denied by default.
+//
+// clinic_status/{placeId}              { confirmedOpenCount, confirmedClosedCount }
+// clinic_status/{placeId}/votes/{uid}  { vote: "open" | "closed", votedAt }
+//
+// The counts are client-written (no Cloud Functions, to stay on the free Spark plan), so the
+// rules check that every count change exactly matches the caller's own vote change in the same
+// transaction. Without that, anyone signed in could set the counts to arbitrary numbers.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function statusPath(placeId) {
+      return /databases/$(database)/documents/clinic_status/$(placeId);
+    }
+
+    function myVotePath(placeId) {
+      return /databases/$(database)/documents/clinic_status/$(placeId)/votes/$(request.auth.uid);
+    }
+
+    function countBefore(placeId, field) {
+      return exists(statusPath(placeId)) ? get(statusPath(placeId)).data.get(field, 0) : 0;
+    }
+
+    function countAfter(placeId, field) {
+      return existsAfter(statusPath(placeId)) ? getAfter(statusPath(placeId)).data.get(field, 0) : 0;
+    }
+
+    function myVoteBefore(placeId) {
+      return exists(myVotePath(placeId)) ? get(myVotePath(placeId)).data.vote : 'none';
+    }
+
+    function myVoteAfter(placeId) {
+      return existsAfter(myVotePath(placeId)) ? getAfter(myVotePath(placeId)).data.vote : 'none';
+    }
+
+    function isChoice(vote, choice) {
+      return vote == choice ? 1 : 0;
+    }
+
+    // True when both counts moved by exactly what the caller's vote change implies.
+    function countsMatchMyVoteChange(placeId) {
+      return countAfter(placeId, 'confirmedOpenCount') ==
+               countBefore(placeId, 'confirmedOpenCount')
+                 + isChoice(myVoteAfter(placeId), 'open')
+                 - isChoice(myVoteBefore(placeId), 'open')
+          && countAfter(placeId, 'confirmedClosedCount') ==
+               countBefore(placeId, 'confirmedClosedCount')
+                 + isChoice(myVoteAfter(placeId), 'closed')
+                 - isChoice(myVoteBefore(placeId), 'closed');
+    }
+
+    match /clinic_status/{placeId} {
+      allow read: if signedIn();
+
+      allow create, update: if signedIn()
+        && request.resource.data.keys().hasOnly(['confirmedOpenCount', 'confirmedClosedCount'])
+        && request.resource.data.get('confirmedOpenCount', 0) is int
+        && request.resource.data.get('confirmedClosedCount', 0) is int
+        && request.resource.data.get('confirmedOpenCount', 0) >= 0
+        && request.resource.data.get('confirmedClosedCount', 0) >= 0
+        && countsMatchMyVoteChange(placeId);
+
+      allow delete: if false;
+
+      match /votes/{uid} {
+        allow read: if signedIn() && request.auth.uid == uid;
+
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['vote', 'votedAt'])
+          && request.resource.data.vote in ['open', 'closed']
+          && request.resource.data.votedAt == request.time
+          && countsMatchMyVoteChange(placeId);
+
+        allow delete: if signedIn() && request.auth.uid == uid
+          && countsMatchMyVoteChange(placeId);
+      }
+    }
+  }
+}
