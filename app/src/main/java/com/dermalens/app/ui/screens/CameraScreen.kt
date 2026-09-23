@@ -560,7 +560,10 @@ fun CameraPreviewScreen(navController: NavController, continueTrackGroupId: Int 
                                                 )
                                             }
                                         },
-                                        onFailed = { isScanning = false }
+                                        onFailed = {
+                                            isScanning = false
+                                            android.widget.Toast.makeText(context, "Couldn't take the photo. Please try again.", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
                                     )
                                 }
                             }

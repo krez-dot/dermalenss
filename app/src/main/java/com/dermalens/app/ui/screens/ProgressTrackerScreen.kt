@@ -206,7 +206,7 @@ fun ProgressTrackerScreen(navController: NavController) {
                         )
                         Spacer(modifier = Modifier.height(20.dp))
                         Button(
-                            onClick = { navController.navigate(Screen.Scan.createRoute()) },
+                            onClick = { navController.navigate(Screen.Scan.createRoute()) { launchSingleTop = true } },
                             modifier = Modifier.fillMaxWidth().height(52.dp),
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = DermaGreen)
@@ -224,7 +224,7 @@ fun ProgressTrackerScreen(navController: NavController) {
                     Column {
                         ConditionTrackCard(
                             track = track,
-                            onScanAgain = { navController.navigate(Screen.Scan.createRoute(continueTrackGroupId = track.trackGroupId)) },
+                            onScanAgain = { navController.navigate(Screen.Scan.createRoute(continueTrackGroupId = track.trackGroupId)) { launchSingleTop = true } },
                             onDeleteScan = { scanId ->
                                 scope.launch {
                                     db.scanRecordDao().deleteScan(scanId)
@@ -249,7 +249,7 @@ fun ProgressTrackerScreen(navController: NavController) {
             if (conditionTracks.isNotEmpty()) {
                 item {
                     Button(
-                        onClick = { navController.navigate(Screen.Scan.createRoute()) },
+                        onClick = { navController.navigate(Screen.Scan.createRoute()) { launchSingleTop = true } },
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(52.dp),
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = DermaGreen)

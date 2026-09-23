@@ -220,7 +220,7 @@ fun HomeScreen(navController: NavController) {
                     modifier = Modifier.fillMaxWidth()
                         .clickable {
                             if (recentScan != null) navController.navigate(Screen.ProgressTracker.route)
-                            else navController.navigate(Screen.Scan.createRoute())
+                            else navController.navigate(Screen.Scan.createRoute()) { launchSingleTop = true }
                         }
                         .then(if (settings.highContrast) Modifier.border(1.5.dp, Color.Black, RoundedCornerShape(16.dp)) else Modifier),
                     shape = RoundedCornerShape(16.dp),
@@ -263,7 +263,7 @@ fun HomeScreen(navController: NavController) {
                 Text("Quick Actions", fontSize = settings.textLg.sp, fontWeight = FontWeight.Bold, color = settings.textPrimary)
                 Spacer(modifier = Modifier.height(10.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    QuickActionCard(icon = Icons.Default.CameraAlt, label = "Scan Skin", color = DermaGreen, modifier = Modifier.weight(1f), onClick = { navController.navigate(Screen.Scan.createRoute()) })
+                    QuickActionCard(icon = Icons.Default.CameraAlt, label = "Scan Skin", color = DermaGreen, modifier = Modifier.weight(1f), onClick = { navController.navigate(Screen.Scan.createRoute()) { launchSingleTop = true } })
                     QuickActionCard(icon = Icons.Default.LocationOn, label = "Find Clinics", color = Color(0xFF0284C7), modifier = Modifier.weight(1f), onClick = { navController.navigate(Screen.ClinicLocator.route) })
                     QuickActionCard(icon = Icons.Default.Timeline, label = "Progress", color = Color(0xFF7C3AED), modifier = Modifier.weight(1f), onClick = { navController.navigate(Screen.ProgressTracker.route) })
                 }

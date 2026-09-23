@@ -68,7 +68,8 @@ data class Clinic(
     val name: String,
     val address: String,
     val distance: String,
-    val openNow: Boolean,
+    /** null when Google didn't say -- shown as "Hours unknown", never guessed as open. */
+    val openNow: Boolean?,
     val hours: String,
     val phone: String,
     val lat: Double,
@@ -184,7 +185,7 @@ private suspend fun fetchNearbyClinics(context: Context, lat: Double, lng: Doubl
             // A temporary closure overrides today's regular hours -- showing "Open Now" from a
             // weekly schedule Google itself says isn't currently honored would be misleading, and
             // worse than just not knowing.
-            val openNow = if (temporarilyClosed) false else if (openingHours?.has("openNow") == true) openingHours.optBoolean("openNow") else true
+            val openNow = if (temporarilyClosed) false else if (openingHours?.has("openNow") == true) openingHours.optBoolean("openNow") else null
             val hours = if (temporarilyClosed) "Temporarily closed" else openingHours?.optJSONArray("weekdayDescriptions")?.let { arr ->
                 (0 until arr.length()).joinToString("\n") { arr.getString(it) }
             }?.takeIf { it.isNotEmpty() } ?: "Contact clinic for hours"
@@ -863,7 +864,8 @@ fun ClinicLocatorScreen(navController: NavController) {
                     DetailRow(icon = Icons.Default.LocationOn, text = clinic.address)
                     DetailRow(icon = Icons.Default.AccessTime, text = clinic.hours)
                     DetailRow(icon = Icons.Default.Phone, text = clinic.phone)
-                    DetailRow(icon = Icons.Default.Circle, text = if (clinic.openNow) "Open Now" else "Closed", textColor = if (clinic.openNow) Color(0xFF2E7D32) else Color(0xFFC62828))
+                    val status = openStatus(clinic.openNow)
+                    DetailRow(icon = Icons.Default.Circle, text = status.label, textColor = status.textColor)
 
                     // Crowd-sourced signal, separate from Google's own businessStatus/hours
                     // above -- see ClinicVotes.kt for why (a specific branch can go stale on
@@ -1045,8 +1047,9 @@ fun CompactClinicCard(clinic: Clinic, route: RouteInfo? = null, onClick: () -> U
                     Text(todaysHoursLine(clinic.hours), fontSize = 12.sp, color = Color.Gray, maxLines = 1)
                 }
             }
-            Box(modifier = Modifier.background(if (clinic.openNow) Color(0xFFE8F5E9) else Color(0xFFFFEBEE), RoundedCornerShape(20.dp)).padding(horizontal = 8.dp, vertical = 4.dp)) {
-                Text(if (clinic.openNow) "Open" else "Closed", fontSize = 11.sp, color = if (clinic.openNow) Color(0xFF2E7D32) else Color(0xFFC62828), fontWeight = FontWeight.SemiBold)
+            val status = openStatus(clinic.openNow)
+            Box(modifier = Modifier.background(status.background, RoundedCornerShape(20.dp)).padding(horizontal = 8.dp, vertical = 4.dp)) {
+                Text(status.shortLabel, fontSize = 11.sp, color = status.textColor, fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -1080,8 +1083,9 @@ fun FullClinicCard(clinic: Clinic, route: RouteInfo? = null, onClick: () -> Unit
                         Text(clinicDistanceLabel(clinic, route), fontSize = 12.sp, color = Color.Gray)
                     }
                 }
-                Box(modifier = Modifier.background(if (clinic.openNow) Color(0xFFE8F5E9) else Color(0xFFFFEBEE), RoundedCornerShape(20.dp)).padding(horizontal = 10.dp, vertical = 4.dp)) {
-                    Text(if (clinic.openNow) "Open Now" else "Closed", fontSize = 12.sp, color = if (clinic.openNow) Color(0xFF2E7D32) else Color(0xFFC62828), fontWeight = FontWeight.SemiBold)
+                val status = openStatus(clinic.openNow)
+                Box(modifier = Modifier.background(status.background, RoundedCornerShape(20.dp)).padding(horizontal = 10.dp, vertical = 4.dp)) {
+                    Text(status.label, fontSize = 12.sp, color = status.textColor, fontWeight = FontWeight.SemiBold)
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
@@ -1092,6 +1096,14 @@ fun FullClinicCard(clinic: Clinic, route: RouteInfo? = null, onClick: () -> Unit
             }
         }
     }
+}
+
+private data class OpenStatus(val label: String, val shortLabel: String, val textColor: Color, val background: Color)
+
+private fun openStatus(openNow: Boolean?) = when (openNow) {
+    true -> OpenStatus("Open Now", "Open", Color(0xFF2E7D32), Color(0xFFE8F5E9))
+    false -> OpenStatus("Closed", "Closed", Color(0xFFC62828), Color(0xFFFFEBEE))
+    null -> OpenStatus("Hours unknown", "Hours unknown", Color(0xFF6B7280), Color(0xFFF3F4F6))
 }
 
 @Composable
