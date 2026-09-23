@@ -19,6 +19,7 @@ import android.net.NetworkCapabilities
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -71,7 +72,11 @@ data class Clinic(
     val hours: String,
     val phone: String,
     val lat: Double,
-    val lng: Double
+    val lng: Double,
+    // Google's Place ID -- lets "Report incorrect info" open this *exact* branch's real Maps
+    // page rather than a name-based search, which matters here since chains like "Professional
+    // Skin Care Formula By Dr. Alvin" have dozens of identically-named branches nationwide.
+    val placeId: String
 )
 
 /** Pulls just today's line out of [hours] (the full week, one line per day, Monday first --
@@ -158,6 +163,15 @@ private suspend fun fetchNearbyClinics(context: Context, lat: Double, lng: Doubl
         val places = runPlacesTextSearch(context, lat, lng)
         val result = mutableListOf<Clinic>()
         for (place in places) {
+            // Google's own index can lag reality -- a place that's shut down for good doesn't
+            // always get pruned from search results right away. Recommending a dermatology
+            // clinic that no longer exists to someone trying to get a skin condition looked at
+            // is a real harm, not a cosmetic issue, so permanently-closed places are dropped
+            // entirely rather than just shown with a "Closed" badge (that badge already means
+            // "closed right now, per today's hours" -- a different, temporary thing).
+            val businessStatus = place.optString("businessStatus", "OPERATIONAL")
+            if (businessStatus == "CLOSED_PERMANENTLY") continue
+
             val name = place.optJSONObject("displayName")?.optString("text")?.takeIf { it.isNotEmpty() } ?: continue
             val loc = place.optJSONObject("location") ?: continue
             val elLat = loc.optDouble("latitude", Double.NaN).takeIf { !it.isNaN() } ?: continue
@@ -166,11 +180,16 @@ private suspend fun fetchNearbyClinics(context: Context, lat: Double, lng: Doubl
             val addr = place.optString("formattedAddress").ifEmpty { "Tarlac, Philippines" }
             val phone = place.optString("internationalPhoneNumber").ifEmpty { "N/A" }
             val openingHours = place.optJSONObject("regularOpeningHours")
-            val openNow = if (openingHours?.has("openNow") == true) openingHours.optBoolean("openNow") else true
-            val hours = openingHours?.optJSONArray("weekdayDescriptions")?.let { arr ->
+            val temporarilyClosed = businessStatus == "CLOSED_TEMPORARILY"
+            // A temporary closure overrides today's regular hours -- showing "Open Now" from a
+            // weekly schedule Google itself says isn't currently honored would be misleading, and
+            // worse than just not knowing.
+            val openNow = if (temporarilyClosed) false else if (openingHours?.has("openNow") == true) openingHours.optBoolean("openNow") else true
+            val hours = if (temporarilyClosed) "Temporarily closed" else openingHours?.optJSONArray("weekdayDescriptions")?.let { arr ->
                 (0 until arr.length()).joinToString("\n") { arr.getString(it) }
             }?.takeIf { it.isNotEmpty() } ?: "Contact clinic for hours"
-            result.add(Clinic(name, addr, "%.1f km".format(dist), openNow, hours, phone, elLat, elLng))
+            val placeId = place.optString("id")
+            result.add(Clinic(name, addr, "%.1f km".format(dist), openNow, hours, phone, elLat, elLng, placeId))
         }
         result.sortedBy { haversineKm(lat, lng, it.lat, it.lng) }
     }
@@ -208,7 +227,7 @@ private fun runPlacesTextSearch(context: Context, lat: Double, lng: Double): Lis
             setRequestProperty("X-Goog-Api-Key", BuildConfig.MAPS_API_KEY)
             setRequestProperty(
                 "X-Goog-FieldMask",
-                "places.displayName,places.formattedAddress,places.location,places.regularOpeningHours,places.internationalPhoneNumber"
+                "places.id,places.displayName,places.formattedAddress,places.location,places.regularOpeningHours,places.internationalPhoneNumber,places.businessStatus"
             )
             // The key is restricted to this Android app (package + SHA-1 cert), but that
             // restriction is normally enforced via headers the official Places SDK adds
@@ -233,40 +252,146 @@ private fun runPlacesTextSearch(context: Context, lat: Double, lng: Double): Lis
     }
 }
 
-private suspend fun fetchRoute(fromLat: Double, fromLng: Double, toLat: Double, toLng: Double): List<LatLng> {
+/** Decodes a Google-encoded polyline (the standard format Routes API returns -- see
+ *  https://developers.google.com/maps/documentation/utilities/polylinealgorithm) into raw
+ *  points. Hand-rolled rather than pulling in `com.google.maps.android:android-maps-utils` for
+ *  one function -- this screen already talks to Google's Places API via a raw HttpURLConnection
+ *  rather than through an SDK (see [runPlacesTextSearch]'s comment), so this matches that. */
+private fun decodePolyline(encoded: String): List<LatLng> {
+    val points = mutableListOf<LatLng>()
+    var index = 0
+    var lat = 0
+    var lng = 0
+    while (index < encoded.length) {
+        var shift = 0
+        var result = 0
+        var b: Int
+        do {
+            b = encoded[index++].code - 63
+            result = result or ((b and 0x1f) shl shift)
+            shift += 5
+        } while (b >= 0x20)
+        lat += if (result and 1 != 0) (result shr 1).inv() else (result shr 1)
+
+        shift = 0
+        result = 0
+        do {
+            b = encoded[index++].code - 63
+            result = result or ((b and 0x1f) shl shift)
+            shift += 5
+        } while (b >= 0x20)
+        lng += if (result and 1 != 0) (result shr 1).inv() else (result shr 1)
+
+        points.add(LatLng(lat / 1e5, lng / 1e5))
+    }
+    return points
+}
+
+/** A resolved driving route: the polyline to draw, plus the real driving distance/duration --
+ *  as opposed to [Clinic.distance], which is straight-line haversine and can meaningfully
+ *  understate actual travel (a river, a highway with no nearby crossing, etc.). */
+data class RouteInfo(val points: List<LatLng>, val distanceMeters: Int, val durationSeconds: Int)
+
+/** Real driving route from Google's Routes API (`computeRoutes`) -- the same generation of API
+ *  as [runPlacesTextSearch] (not the older Directions API, not the Maps SDK), reusing the same
+ *  Android-app-restricted key and the same manually-attached X-Android-Package/X-Android-Cert
+ *  headers that restriction requires for a raw HTTP call. Replaced the free OSRM public demo
+ *  server now that clinic search already depends on Google/billing anyway -- see the caller's
+ *  distance-based debounce for why this isn't fired on every single location tick. Returns null
+ *  on failure (straight-line haversine is still shown via [Clinic.distance] either way, so there's
+ *  no need for this to also carry its own straight-line fallback the way the polyline-only
+ *  version used to). */
+private suspend fun fetchRoute(context: Context, fromLat: Double, fromLng: Double, toLat: Double, toLng: Double): RouteInfo? {
     return withContext(Dispatchers.IO) {
         try {
-            val url = java.net.URL(
-                "https://router.project-osrm.org/route/v1/driving/$fromLng,$fromLat;$toLng,$toLat?overview=full&geometries=geojson"
-            )
+            val body = org.json.JSONObject().apply {
+                put("origin", org.json.JSONObject().apply {
+                    put("location", org.json.JSONObject().apply {
+                        put("latLng", org.json.JSONObject().apply {
+                            put("latitude", fromLat)
+                            put("longitude", fromLng)
+                        })
+                    })
+                })
+                put("destination", org.json.JSONObject().apply {
+                    put("location", org.json.JSONObject().apply {
+                        put("latLng", org.json.JSONObject().apply {
+                            put("latitude", toLat)
+                            put("longitude", toLng)
+                        })
+                    })
+                })
+                put("travelMode", "DRIVE")
+            }
+            val url = java.net.URL("https://routes.googleapis.com/directions/v2:computeRoutes")
             val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
-                requestMethod = "GET"
+                requestMethod = "POST"
+                doOutput = true
                 connectTimeout = 10000
                 readTimeout = 15000
-                setRequestProperty("User-Agent", "DermaLens/1.0")
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("X-Goog-Api-Key", BuildConfig.MAPS_API_KEY)
+                // Routes API requires an explicit field mask on every request (unlike the old
+                // Directions API) -- duration/distanceMeters ride along on the same request as
+                // the polyline, so showing real driving time/distance instead of straight-line
+                // costs nothing extra over what was already being called.
+                setRequestProperty("X-Goog-FieldMask", "routes.polyline.encodedPolyline,routes.duration,routes.distanceMeters")
+                setRequestProperty("X-Android-Package", context.packageName)
+                setRequestProperty("X-Android-Cert", ANDROID_CERT_SHA1)
+                outputStream.use { it.write(body.toString().toByteArray()) }
+            }
+            if (conn.responseCode !in 200..299) {
+                val errorBody = conn.errorStream?.bufferedReader()?.readText() ?: "(no error body)"
+                android.util.Log.e("DermaLens", "Routes API failed: HTTP ${conn.responseCode} -- $errorBody")
+                return@withContext null
             }
             val response = conn.inputStream.bufferedReader().readText()
-            val coords = org.json.JSONObject(response)
-                .getJSONArray("routes")
-                .getJSONObject(0)
-                .getJSONObject("geometry")
-                .getJSONArray("coordinates")
-            (0 until coords.length()).map { i ->
-                val c = coords.getJSONArray(i)
-                LatLng(c.getDouble(1), c.getDouble(0))
-            }
+            val route = org.json.JSONObject(response).getJSONArray("routes").getJSONObject(0)
+            val encodedPolyline = route.getJSONObject("polyline").getString("encodedPolyline")
+            val distanceMeters = route.optInt("distanceMeters", -1)
+            // Duration comes back as a Protobuf Duration string like "812s", not a bare number.
+            val durationSeconds = route.optString("duration", "").removeSuffix("s").toDoubleOrNull()?.toInt() ?: -1
+            if (distanceMeters < 0 || durationSeconds < 0) return@withContext null
+            RouteInfo(decodePolyline(encodedPolyline), distanceMeters, durationSeconds)
         } catch (e: Exception) {
-            listOf(LatLng(fromLat, fromLng), LatLng(toLat, toLng))
+            android.util.Log.e("DermaLens", "Routes API failed", e)
+            null
         }
     }
+}
+
+/** "2.3 km · 6 min" once the real driving route has resolved; falls back to the straight-line
+ *  [Clinic.distance] alone (no duration) before it resolves or if the Routes call failed. */
+private fun clinicDistanceLabel(clinic: Clinic, route: RouteInfo?): String {
+    if (route == null) return clinic.distance
+    val km = "%.1f km".format(route.distanceMeters / 1000.0)
+    val minutes = (route.durationSeconds / 60).coerceAtLeast(1)
+    return "$km · $minutes min"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ClinicLocatorScreen(navController: NavController) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var showMap by remember { mutableStateOf(true) }
     var selectedClinic by remember { mutableStateOf<Clinic?>(null) }
+    // Crowd-sourced open/closed tally for whichever clinic's popup is currently open -- see
+    // ClinicVotes.kt. Reset per-clinic by the LaunchedEffect below, not shared across clinics.
+    var voteTally by remember { mutableStateOf<ClinicVoteTally?>(null) }
+    var isVoting by remember { mutableStateOf(false) }
+    LaunchedEffect(selectedClinic?.placeId) {
+        voteTally = null
+        val placeId = selectedClinic?.placeId
+        val userId = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+        if (!placeId.isNullOrEmpty() && userId != null) {
+            try {
+                voteTally = fetchClinicVoteTally(placeId, userId)
+            } catch (e: Exception) {
+                android.util.Log.e("DermaLens", "Failed to load clinic vote tally", e)
+            }
+        }
+    }
     var clinics by remember { mutableStateOf<List<Clinic>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var isOffline by remember { mutableStateOf(false) }
@@ -295,7 +420,14 @@ fun ClinicLocatorScreen(navController: NavController) {
     var locationPermanentlyDenied by remember { mutableStateOf(false) }
     val activity = context as? android.app.Activity
 
-    var routes by remember { mutableStateOf<Map<String, List<LatLng>>>(emptyMap()) }
+    var routes by remember { mutableStateOf<Map<String, RouteInfo>>(emptyMap()) }
+    // What the current `routes` map was actually computed against -- lets the effect below tell
+    // "clinics changed, must refetch" apart from "position drifted 5 meters since the last GPS
+    // tick, don't bother." Google's Routes API is billed per request, unlike the free OSRM demo
+    // server this replaced, so re-running it on every single location update (every 3-5s while
+    // this screen is open, per the live-tracking DisposableEffect below) would be real cost for
+    // no visible benefit -- a driving route's polyline doesn't meaningfully change over 100m.
+    var lastRouteFetch by remember { mutableStateOf<Triple<List<Clinic>, Double, Double>?>(null) }
 
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
@@ -421,7 +553,17 @@ fun ClinicLocatorScreen(navController: NavController) {
                 val loc = result.lastLocation ?: return
                 userLat = loc.latitude
                 userLng = loc.longitude
-                locationUnavailable = false
+                // Real bug this fixed: the one-shot fetch above (LaunchedEffect) is what
+                // actually owns locationLabel/clinics/isLoading -- if it already gave up and
+                // set locationUnavailable = true, silently clearing that flag here (as this
+                // callback used to do) left the screen self-contradictory: a real "You are
+                // here" dot appearing right next to text still insisting location couldn't be
+                // determined, with clinics never re-searched for. Retrigger the real fetch
+                // instead of just patching the flag, so the label/clinics catch up too.
+                if (locationUnavailable) {
+                    locationUnavailable = false
+                    retryTrigger++
+                }
             }
         }
         fusedLocationClient.requestLocationUpdates(locationRequest, callback, android.os.Looper.getMainLooper())
@@ -431,11 +573,22 @@ fun ClinicLocatorScreen(navController: NavController) {
     }
 
     LaunchedEffect(clinics, userLat, userLng) {
-        val fetched = mutableMapOf<String, List<LatLng>>()
+        if (clinics.isEmpty()) {
+            routes = emptyMap()
+            lastRouteFetch = null
+            return@LaunchedEffect
+        }
+        val last = lastRouteFetch
+        val sameClinicSet = last?.first == clinics
+        val movedFar = last == null || haversineKm(last.second, last.third, userLat, userLng) > 0.1
+        if (sameClinicSet && !movedFar) return@LaunchedEffect
+
+        val fetched = mutableMapOf<String, RouteInfo>()
         clinics.forEach { clinic ->
-            fetched[clinic.name] = fetchRoute(userLat, userLng, clinic.lat, clinic.lng)
+            fetchRoute(context, userLat, userLng, clinic.lat, clinic.lng)?.let { fetched[clinic.name] = it }
         }
         routes = fetched
+        lastRouteFetch = Triple(clinics, userLat, userLng)
     }
 
     Scaffold(
@@ -575,7 +728,7 @@ fun ClinicLocatorScreen(navController: NavController) {
                             )
                         }
                         clinics.forEach { clinic ->
-                            val routePoints = routes[clinic.name]
+                            val routePoints = routes[clinic.name]?.points
                                 ?: listOf(LatLng(userLat, userLng), LatLng(clinic.lat, clinic.lng))
                             Polyline(points = routePoints, color = Color(0xFF7C3AED), width = 8f)
                             Marker(
@@ -651,7 +804,7 @@ fun ClinicLocatorScreen(navController: NavController) {
                     }
                     itemsIndexed(clinics) { index, clinic ->
                         EntranceAnimation(delayMillis = index.coerceAtMost(6) * 60) {
-                            CompactClinicCard(clinic = clinic, onClick = { selectedClinic = clinic })
+                            CompactClinicCard(clinic = clinic, route = routes[clinic.name], onClick = { selectedClinic = clinic })
                         }
                     }
                 }
@@ -684,7 +837,7 @@ fun ClinicLocatorScreen(navController: NavController) {
                     }
                     itemsIndexed(clinics) { index, clinic ->
                         EntranceAnimation(delayMillis = index.coerceAtMost(6) * 60) {
-                            FullClinicCard(clinic = clinic, onClick = { selectedClinic = clinic })
+                            FullClinicCard(clinic = clinic, route = routes[clinic.name], onClick = { selectedClinic = clinic })
                         }
                     }
                 }
@@ -711,6 +864,48 @@ fun ClinicLocatorScreen(navController: NavController) {
                     DetailRow(icon = Icons.Default.AccessTime, text = clinic.hours)
                     DetailRow(icon = Icons.Default.Phone, text = clinic.phone)
                     DetailRow(icon = Icons.Default.Circle, text = if (clinic.openNow) "Open Now" else "Closed", textColor = if (clinic.openNow) Color(0xFF2E7D32) else Color(0xFFC62828))
+
+                    // Crowd-sourced signal, separate from Google's own businessStatus/hours
+                    // above -- see ClinicVotes.kt for why (a specific branch can go stale on
+                    // Google's side well before Google's own data reflects it).
+                    if (clinic.placeId.isNotEmpty()) {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp), color = Color(0xFFF3F4F6))
+                        Text("Still open? Help others by confirming.", fontSize = 12.sp, color = Color(0xFF6B7280))
+                        Spacer(modifier = Modifier.height(8.dp))
+                        val tally = voteTally
+                        if (tally == null) {
+                            CircularProgressIndicator(color = DermaGreen, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        } else {
+                            fun castVote(choice: String) {
+                                val userId = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: return
+                                isVoting = true
+                                scope.launch {
+                                    try {
+                                        voteTally = castClinicVote(clinic.placeId, userId, choice)
+                                    } catch (e: Exception) {
+                                        android.util.Log.e("DermaLens", "Clinic vote failed", e)
+                                    }
+                                    isVoting = false
+                                }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                VoteChip(
+                                    label = "Still open (${tally.confirmedOpenCount})",
+                                    selected = tally.myVote == "open",
+                                    selectedColor = Color(0xFF16A34A),
+                                    enabled = !isVoting,
+                                    onClick = { castVote("open") }
+                                )
+                                VoteChip(
+                                    label = "Closed (${tally.confirmedClosedCount})",
+                                    selected = tally.myVote == "closed",
+                                    selectedColor = Color(0xFFDC2626),
+                                    enabled = !isVoting,
+                                    onClick = { castVote("closed") }
+                                )
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -718,6 +913,31 @@ fun ClinicLocatorScreen(navController: NavController) {
                     Text("Close")
                 }
             },
+            // Google's own index can be stale for a specific branch even when nothing about the
+            // request is wrong on this app's end (a whole chain shows "operational" because most
+            // branches are, even if this one specifically closed -- see the businessStatus filter
+            // above for what that *can* catch, and why this can't be caught the same way). Opens
+            // this exact clinic's real Maps page (by Place ID, not a name search -- chains like
+            // this one have many identically-named branches) so anyone can flag it there, which
+            // fixes it for every future user of Maps, not just this app.
+            dismissButton = if (clinic.placeId.isNotEmpty()) {
+                {
+                    TextButton(onClick = {
+                        // Google's Maps URLs API (https://developers.google.com/maps/documentation/urls/get-started)
+                        // needs *both* params -- query_place_id alone with no query is documented
+                        // but q=place_id:<id> (what this used to send) isn't a real scheme at all
+                        // and Maps just treats it as literal search text instead of a place lookup.
+                        val encodedName = java.net.URLEncoder.encode(clinic.name, "UTF-8")
+                        val intent = android.content.Intent(
+                            android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse("https://www.google.com/maps/search/?api=1&query=$encodedName&query_place_id=${clinic.placeId}")
+                        )
+                        context.startActivity(intent)
+                    }) {
+                        Text("Report incorrect info", color = Color(0xFF6B7280), fontSize = 12.sp)
+                    }
+                }
+            } else null,
             shape = RoundedCornerShape(16.dp),
             containerColor = Color.White,
             titleContentColor = Color(0xFF111827),
@@ -803,7 +1023,7 @@ fun EmptyClinicsState() {
 }
 
 @Composable
-fun CompactClinicCard(clinic: Clinic, onClick: () -> Unit) {
+fun CompactClinicCard(clinic: Clinic, route: RouteInfo? = null, onClick: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth().clickable { onClick() },
         shape = RoundedCornerShape(12.dp),
@@ -818,7 +1038,7 @@ fun CompactClinicCard(clinic: Clinic, onClick: () -> Unit) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(clinic.name, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1a1a1a))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(clinic.distance, fontSize = 12.sp, color = Color.Gray)
+                    Text(clinicDistanceLabel(clinic, route), fontSize = 12.sp, color = Color.Gray)
                     Text(" · ", fontSize = 12.sp, color = Color.Gray)
                     Icon(Icons.Default.AccessTime, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(12.dp))
                     Spacer(modifier = Modifier.width(2.dp))
@@ -833,7 +1053,7 @@ fun CompactClinicCard(clinic: Clinic, onClick: () -> Unit) {
 }
 
 @Composable
-fun FullClinicCard(clinic: Clinic, onClick: () -> Unit) {
+fun FullClinicCard(clinic: Clinic, route: RouteInfo? = null, onClick: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth().clickable { onClick() },
         shape = RoundedCornerShape(16.dp),
@@ -857,7 +1077,7 @@ fun FullClinicCard(clinic: Clinic, onClick: () -> Unit) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.LocationOn, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(14.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(clinic.distance, fontSize = 12.sp, color = Color.Gray)
+                        Text(clinicDistanceLabel(clinic, route), fontSize = 12.sp, color = Color.Gray)
                     }
                 }
                 Box(modifier = Modifier.background(if (clinic.openNow) Color(0xFFE8F5E9) else Color(0xFFFFEBEE), RoundedCornerShape(20.dp)).padding(horizontal = 10.dp, vertical = 4.dp)) {
@@ -871,6 +1091,25 @@ fun FullClinicCard(clinic: Clinic, onClick: () -> Unit) {
                 Text(todaysHoursLine(clinic.hours), fontSize = 12.sp, color = Color.Gray, maxLines = 1)
             }
         }
+    }
+}
+
+@Composable
+fun VoteChip(label: String, selected: Boolean, selectedColor: Color, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(if (selected) selectedColor.copy(alpha = 0.15f) else Color(0xFFF3F4F6))
+            .then(if (selected) Modifier.border(1.dp, selectedColor, RoundedCornerShape(20.dp)) else Modifier)
+            .clickable(enabled = enabled) { onClick() }
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Text(
+            label,
+            fontSize = 12.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (selected) selectedColor else Color(0xFF374151)
+        )
     }
 }
 

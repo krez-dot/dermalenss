@@ -79,6 +79,17 @@ android {
     }
 }
 
+// firebase-firestore pulls in real com.google.guava:guava (which contains
+// ListenableFuture), while CameraX/AndroidX concurrent-futures separately pulls in
+// com.google.guava:listenablefuture -- an empty placeholder artifact that exists specifically
+// so *either* real Guava or that shim can be on the classpath, never both. Excluding it only
+// from firestore's own dependency tree wasn't enough (checkDebugDuplicateClasses still found it
+// coming from elsewhere in the graph); Google's own documented fix for this exact clash is a
+// project-wide exclusion, not a per-dependency one.
+configurations.all {
+    exclude(group = "com.google.guava", module = "listenablefuture")
+}
+
 dependencies {
     // ── Core ──────────────────────────────────────────────────────────────
     implementation(libs.androidx.core.ktx)
@@ -146,6 +157,19 @@ dependencies {
     // newest version that's actually compatible with this project's Kotlin version.
     implementation(platform("com.google.firebase:firebase-bom:33.5.1"))
     implementation("com.google.firebase:firebase-auth")
+    // Crowd-sourced "is this clinic still open" votes for Clinic Locator -- direct
+    // client reads/writes with FieldValue.increment(), no Cloud Functions, so this stays on
+    // the free Spark plan (same billing constraint documented in the Contribute to Research
+    // pipeline's Apps Script choice -- see ClinicVotes.kt). See the guava/listenablefuture
+    // exclusion above configurations.all -- required for this to coexist with CameraX.
+    implementation("com.google.firebase:firebase-firestore")
+    // Excluding the listenablefuture shim project-wide (above) removes it from CameraX's own
+    // compile-time view of ListenableFuture too, not just Firestore's -- Firestore's real Guava
+    // is only implementation-scoped and transitively present, which isn't reliably enough for
+    // CameraScreen.kt's own references to ListenableFuture (ProcessCameraProvider.getInstance()
+    // etc.) to resolve. Declaring it directly, pinned to the exact version Gradle already
+    // resolves Firestore's transitive dependency to, makes it unambiguous.
+    implementation("com.google.guava:guava:32.1.3-android")
 
     // ── Sign in with Google (Credential Manager) ─────────────────────────
     implementation("androidx.credentials:credentials:1.3.0")
